@@ -8,6 +8,20 @@ namespace: retinex
 
 functions: MSRCP, MSRCR
 
+## Installation
+
+```
+pip install vapoursynth-retinex
+```
+
+Or compile from source, using [Meson](https://mesonbuild.com/):
+
+```
+meson setup build
+ninja -C build
+ninja -C build install
+```
+
 ## About Retinex
 
 The Retinex theory and algorithm mainly aims at simulating the color constancy feature of HVS(Human Visual System).

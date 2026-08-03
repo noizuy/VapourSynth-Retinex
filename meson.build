@@ -1,7 +1,7 @@
 project('Retinex', 'cpp',
-  default_options : ['buildtype=release', 'b_ndebug=if-release', 'cpp_std=c++14'],
-  meson_version : '>=0.48.0',
-  version : '4'
+  default_options: ['buildtype=release', 'b_ndebug=if-release', 'cpp_std=c++14'],
+  meson_version: '>=0.49.0',
+  version: '4'
 )
 
 sources = [
@@ -12,16 +12,19 @@ sources = [
   'source/VSPlugin.cpp'
 ]
 
-vapoursynth_dep = dependency('vapoursynth').partial_dependency(compile_args : true, includes : true)
+# The VapourSynth4/VSHelper4 headers are vendored under include/vapoursynth so that the
+# plugin can be built without a system pkg-config/dev package, e.g. inside the isolated
+# build environment used when packaging this project as a Python wheel.
+py = import('python').find_installation()
 
 if host_machine.cpu_family().startswith('x86')
   add_project_arguments('-mfpmath=sse', '-msse2', language : 'cpp')
 endif
 
 shared_module('retinex', sources,
-  dependencies : vapoursynth_dep,
   include_directories : include_directories('include'),
   install : true,
-  install_dir : join_paths(vapoursynth_dep.get_pkgconfig_variable('libdir'), 'vapoursynth'),
+  install_dir : py.get_install_dir() / 'vapoursynth' / 'plugins',
+  name_prefix : '',
   gnu_symbol_visibility : 'hidden'
 )
