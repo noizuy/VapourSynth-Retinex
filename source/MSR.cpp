@@ -18,19 +18,31 @@
 
 
 #include "Helper.h"
-#include "Gaussian.h"
 #include "MSR.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-int MSRProcess::MSRKernel(FLType *odata, const FLType *idata) const
+void MSRProcess::CopyIntensity(FLType *idata, int channel) const
+{
+    const VSFrame *frame = intensityFrame[channel];
+    const int srcStride = static_cast<int>(vsapi->getStride(frame, 0) / sizeof(float));
+    const float *srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(frame, 0));
+
+    for (int j = 0; j < height; j++)
+    {
+        const float *srow = srcp + j * srcStride;
+        FLType *drow = idata + j * stride;
+        for (int x = 0; x < width; x++)
+            drow[x] = static_cast<FLType>(srow[x]);
+    }
+}
+
+
+int MSRProcess::MSRKernel(FLType *odata, const FLType *idata, int channel) const
 {
     int i, j, upper;
-
-    //FLType FloorFL = 0;
-    //FLType CeilFL = 1;
 
     FLType *gauss = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
 
@@ -42,15 +54,23 @@ int MSRProcess::MSRKernel(FLType *odata, const FLType *idata) const
     }
 
     size_t s, scount = d.sigma.size();
-    FLType B, B1, B2, B3;
+    size_t blurIdx = 0; // advances only for scales with sigma > 0, matching blurFrame[channel]'s order
 
     for (s = 0; s < scount; s++)
     {
         if (d.sigma[s] > 0)
         {
-            Recursive_Gaussian_Parameters(d.sigma[s], B, B1, B2, B3);
-            Recursive_Gaussian2D_Horizontal(gauss, idata, height, width, stride, B, B1, B2, B3);
-            Recursive_Gaussian2D_Vertical(gauss, gauss, height, width, stride, B, B1, B2, B3);
+            const VSFrame *bf = blurFrame[channel][blurIdx++];
+            const int gaussStride = static_cast<int>(vsapi->getStride(bf, 0) / sizeof(float));
+            const float *gaussp = reinterpret_cast<const float *>(vsapi->getReadPtr(bf, 0));
+
+            for (j = 0; j < height; j++)
+            {
+                const float *grow = gaussp + j * gaussStride;
+                FLType *drow = gauss + j * stride;
+                for (int x = 0; x < width; x++)
+                    drow[x] = static_cast<FLType>(grow[x]);
+            }
 
             for (j = 0; j < height; j++)
             {

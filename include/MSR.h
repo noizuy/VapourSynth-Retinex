@@ -22,6 +22,8 @@
 
 
 #include "Helper.h"
+#include "Device.h"
+#include "Intensity.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -58,6 +60,19 @@ public:
     bool fulls = MSRDefault.fulls;
     bool fulld = MSRDefault.fulld;
 
+    // One entry per sigma scale (expanded to sigma.size(), repeating the last given entry).
+    std::vector<BlurDevice> device;
+    std::vector<int64_t> device_id;
+    std::vector<int64_t> num_streams;
+    std::vector<int64_t> tune; // -1 means "not specified" (gpu/OpenCL only)
+
+    // Built by buildGraph() once arguments are known: one intensity node per channel
+    // (1 for MSRCP, 3 - R/G/B - for MSRCR), and per channel one blurred node per active
+    // (sigma > 0) scale, in the same order as sigma itself.
+    int channelCount = 0;
+    VSNode *intensityNode[VSMaxPlaneCount] = { nullptr, nullptr, nullptr };
+    std::vector<VSNode *> blurNode[VSMaxPlaneCount];
+
 private:
     void fulls_select()
     {
@@ -67,11 +82,22 @@ private:
             fulls = true;
     }
 
+    // channels[c] == (intensity mode, plane/channel index used when mode is RGBChannel).
+    virtual void getChannels(std::vector<std::pair<IntensityMode, int>> &channels) const = 0;
+
 public:
     MSRData(const VSAPI *_vsapi = nullptr, std::string _FunctionName = "MSR", std::string _NameSpace = "retinex")
         : VSData(_vsapi, _FunctionName, _NameSpace) {}
 
-    virtual ~MSRData() {}
+    virtual ~MSRData()
+    {
+        for (int c = 0; c < VSMaxPlaneCount; c++)
+        {
+            if (intensityNode[c]) vsapi->freeNode(intensityNode[c]);
+            for (VSNode *n : blurNode[c])
+                vsapi->freeNode(n);
+        }
+    }
 
     virtual int arguments_process(const VSMap *in, VSMap *out)
     {
@@ -160,7 +186,129 @@ public:
         if (error)
             fulld = fulls;
 
+        // device / device_id / num_streams / tune: one entry per sigma scale. Fewer entries
+        // than sigma are allowed; the last given entry is repeated for the remaining scales.
+        m = vsapi->mapNumElements(in, "device");
+        for (i = 0; i < m; i++)
+        {
+            const char *devStr = vsapi->mapGetData(in, "device", i, nullptr);
+            BlurDevice dev;
+            if (!ParseDevice(devStr, dev))
+            {
+                setError(out, "Invalid \"device\" assigned, must be \"cpu\", \"gpu\" or \"cuda\"");
+                return 1;
+            }
+            device.push_back(dev);
+        }
+        if (device.empty())
+            device.push_back(BlurDevice::CPU);
+        while (device.size() < scount)
+            device.push_back(device.back());
+
+        m = vsapi->mapNumElements(in, "device_id");
+        for (i = 0; i < m; i++)
+        {
+            int64_t id = vsapi->mapGetInt(in, "device_id", i, nullptr);
+            if (id < 0)
+            {
+                setError(out, "Invalid \"device_id\" assigned, must be a non-negative integer");
+                return 1;
+            }
+            device_id.push_back(id);
+        }
+        if (device_id.empty())
+            device_id.push_back(0);
+        while (device_id.size() < scount)
+            device_id.push_back(device_id.back());
+
+        m = vsapi->mapNumElements(in, "num_streams");
+        for (i = 0; i < m; i++)
+        {
+            int64_t ns = vsapi->mapGetInt(in, "num_streams", i, nullptr);
+            if (ns < 1)
+            {
+                setError(out, "Invalid \"num_streams\" assigned, must be a positive integer");
+                return 1;
+            }
+            num_streams.push_back(ns);
+        }
+        if (num_streams.empty())
+            num_streams.push_back(1);
+        while (num_streams.size() < scount)
+            num_streams.push_back(num_streams.back());
+
+        m = vsapi->mapNumElements(in, "tune");
+        for (i = 0; i < m; i++)
+            tune.push_back(vsapi->mapGetInt(in, "tune", i, nullptr));
+        if (tune.empty())
+            tune.push_back(-1);
+        while (tune.size() < scount)
+            tune.push_back(tune.back());
+
         return 0;
+    }
+
+    // Builds the intensity-extraction and per-scale blur node graph. Must be called after
+    // arguments_process() succeeds and before the filter node itself is created. Returns
+    // false (and sets an error on out) on failure, e.g. a required backend plugin is missing.
+    bool buildGraph(VSCore *core, VSMap *out)
+    {
+        std::vector<std::pair<IntensityMode, int>> channels;
+        getChannels(channels);
+        channelCount = static_cast<int>(channels.size());
+
+        for (int c = 0; c < channelCount; c++)
+        {
+            intensityNode[c] = CreateIntensityNode(node, fulls, channels[c].first, channels[c].second, core, vsapi);
+            if (!intensityNode[c])
+            {
+                setError(out, "failed to build the intensity extraction node");
+                return false;
+            }
+
+            for (size_t s = 0; s < sigma.size(); s++)
+            {
+                if (sigma[s] <= 0) continue;
+
+                std::string errMsg;
+                VSNode *blurred = BuildGaussianBlurNode(intensityNode[c], sigma[s], device[s],
+                    device_id[s], num_streams[s], tune[s], core, vsapi, errMsg);
+                if (!blurred)
+                {
+                    setError(out, errMsg.c_str());
+                    return false;
+                }
+                blurNode[c].push_back(blurred);
+            }
+        }
+
+        return true;
+    }
+
+    // Requests (arInitial) or must be paired with a matching getFrameFilter (arAllFramesReady)
+    // for every auxiliary node this instance built, in addition to the main input node.
+    void requestFrames(int n, VSFrameContext *frameCtx) const
+    {
+        vsapi->requestFrameFilter(n, node, frameCtx);
+        for (int c = 0; c < channelCount; c++)
+        {
+            vsapi->requestFrameFilter(n, intensityNode[c], frameCtx);
+            for (VSNode *bn : blurNode[c])
+                vsapi->requestFrameFilter(n, bn, frameCtx);
+        }
+    }
+
+    // Fills dependencies with every node this instance built (main input, intensity nodes,
+    // blurred nodes), for use with createVideoFilter.
+    void fillDependencies(std::vector<VSFilterDependency> &dependencies) const
+    {
+        dependencies.push_back({ node, rpStrictSpatial });
+        for (int c = 0; c < channelCount; c++)
+        {
+            dependencies.push_back({ intensityNode[c], rpStrictSpatial });
+            for (VSNode *bn : blurNode[c])
+                dependencies.push_back({ bn, rpStrictSpatial });
+        }
     }
 };
 
@@ -174,6 +322,12 @@ class MSRProcess
 private:
     const MSRData &d;
 
+protected:
+    // Fetched once per GetFrame call, in the constructor, for every node d built; freed in
+    // the destructor. Indexed the same way as d.intensityNode / d.blurNode.
+    const VSFrame *intensityFrame[VSMaxPlaneCount] = { nullptr, nullptr, nullptr };
+    std::vector<const VSFrame *> blurFrame[VSMaxPlaneCount];
+
 private:
     template < typename T >
     void process_core();
@@ -184,12 +338,33 @@ protected:
 
 public:
     MSRProcess(const MSRData &_d, int n, VSFrameContext *frameCtx, VSCore *core, const VSAPI *_vsapi)
-        : VSProcess(_d, n, frameCtx, core, _vsapi), d(_d) {}
+        : VSProcess(_d, n, frameCtx, core, _vsapi), d(_d)
+    {
+        for (int c = 0; c < d.channelCount; c++)
+        {
+            intensityFrame[c] = vsapi->getFrameFilter(n, d.intensityNode[c], frameCtx);
+            for (VSNode *bn : d.blurNode[c])
+                blurFrame[c].push_back(vsapi->getFrameFilter(n, bn, frameCtx));
+        }
+    }
 
-    virtual ~MSRProcess() {}
+    virtual ~MSRProcess()
+    {
+        for (int c = 0; c < d.channelCount; c++)
+        {
+            if (intensityFrame[c]) vsapi->freeFrame(intensityFrame[c]);
+            for (const VSFrame *f : blurFrame[c])
+                vsapi->freeFrame(f);
+        }
+    }
 
-    // Multi Scale Retinex process kernel for floating point data
-    int MSRKernel(FLType *odata, const FLType *idata) const;
+    // Copies the pre-computed [0,1] intensity channel for the given channel (as built by the
+    // Intensity node) into idata, using this process's own buffer stride.
+    void CopyIntensity(FLType *idata, int channel) const;
+
+    // Multi Scale Retinex process kernel for floating point data: combines the pre-blurred
+    // per-scale frames for the given channel with idata into odata (log-average form).
+    int MSRKernel(FLType *odata, const FLType *idata, int channel) const;
 
     // Simplest color balance with pixel clipping on either side of the dynamic range
     int SimplestColorBalance(FLType *odata, const FLType *idata) const; // odata as input and output, idata as source

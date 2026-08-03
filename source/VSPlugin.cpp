@@ -30,8 +30,18 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI
         "Implementation of Retinex algorithm for VapourSynth.",
         VS_MAKE_VERSION(1, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
 
-    vspapi->registerFunction("MSRCP", "input:vnode;sigma:float[]:opt;lower_thr:float:opt;upper_thr:float:opt;fulls:int:opt;fulld:int:opt;chroma_protect:float:opt", "clip:vnode;", MSRCPCreate, nullptr, plugin);
-    vspapi->registerFunction("MSRCR", "input:vnode;sigma:float[]:opt;lower_thr:float:opt;upper_thr:float:opt;fulls:int:opt;fulld:int:opt;restore:float:opt", "clip:vnode;", MSRCRCreate, nullptr, plugin);
+    const char *DeviceArgs =
+        "device:data[]:opt;"
+        "device_id:int[]:opt;"
+        "num_streams:int[]:opt;"
+        "tune:int[]:opt;";
+
+    vspapi->registerFunction("MSRCP",
+        (std::string("input:vnode;sigma:float[]:opt;lower_thr:float:opt;upper_thr:float:opt;fulls:int:opt;fulld:int:opt;chroma_protect:float:opt;") + DeviceArgs).c_str(),
+        "clip:vnode;", MSRCPCreate, nullptr, plugin);
+    vspapi->registerFunction("MSRCR",
+        (std::string("input:vnode;sigma:float[]:opt;lower_thr:float:opt;upper_thr:float:opt;fulls:int:opt;fulld:int:opt;restore:float:opt;") + DeviceArgs).c_str(),
+        "clip:vnode;", MSRCRCreate, nullptr, plugin);
 }
 
 

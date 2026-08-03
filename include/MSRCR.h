@@ -43,6 +43,12 @@ class MSRCRData
 public:
     double restore = MSRCRDefault.restore;
 
+private:
+    virtual void getChannels(std::vector<std::pair<IntensityMode, int>> &channels) const override
+    {
+        channels = { { IntensityMode::RGBChannel, 0 }, { IntensityMode::RGBChannel, 1 }, { IntensityMode::RGBChannel, 2 } };
+    }
+
 public:
     MSRCRData(const VSAPI *_vsapi = nullptr, std::string _FunctionName = "MSRCR")
         : MSRData(_vsapi, _FunctionName) {}
@@ -51,7 +57,8 @@ public:
 
     virtual int arguments_process(const VSMap *in, VSMap *out)
     {
-        MSRData::arguments_process(in, out);
+        if (MSRData::arguments_process(in, out))
+            return 1;
 
         int error;
 
@@ -110,22 +117,13 @@ template < typename T >
 void MSRCRProcess::process_core()
 {
     int i, j, upper;
-    FLType gain, offset;
 
     // Calculate quantization parameters according to bit per sample and limited/full range
     // Floor and Ceil for limited range src will be determined later according to minimum and maximum value in the frame
     T sFloor = 0;
     T sCeil = (1 << bps) - 1;
-    T sRange = d.fulls ? (1 << bps) - 1 : 219 << (bps - 8);
     T dFloor = d.fulld ? 0 : 16 << (bps - 8);
     T dCeil = d.fulld ? (1 << bps) - 1 : 235 << (bps - 8);
-    //T dRange = d.fulld ? (1 << bps) - 1 : 219 << (bps - 8);
-    FLType sFloorFL = static_cast<FLType>(sFloor);
-    //FLType sCeilFL = static_cast<FLType>(sCeil);
-    FLType sRangeFL = static_cast<FLType>(sRange);
-    //FLType dFloorFL = static_cast<FLType>(dFloor);
-    //FLType dCeilFL = static_cast<FLType>(dCeil);
-    //FLType dRangeFL = static_cast<FLType>(dRange);
 
     // Allocate floating point data buff
     FLType *idata = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
@@ -164,88 +162,23 @@ void MSRCRProcess::process_core()
         {
             sFloor = min;
             sCeil = max;
-            sFloorFL = static_cast<FLType>(sFloor);
-            //sCeilFL = static_cast<FLType>(sCeil);
         }
     }
 
-    // Derive floating point R channel from integer R channel
-    if (d.fulls)
-    {
-        gain = 1 / sRangeFL;
-        for (j = 0; j < height; j++)
-        {
-            i = stride * j;
-            for (upper = i + width; i < upper; i++)
-                idata[i] = Rsrcp[i] * gain;
-        }
-    }
-    else
-    {
-        offset = -sFloorFL;
-        gain = 1 / static_cast<FLType>(sCeil - sFloor);
-        for (j = 0; j < height; j++)
-        {
-            i = stride * j;
-            for (upper = i + width; i < upper; i++)
-                idata[i] = (Rsrcp[i] + offset) * gain;
-        }
-    }
+    // R/G/B intensity channels (already derived, normalized to [0,1], and blurred per scale
+    // by the Intensity/blur nodes built at filter creation)
 
     // Apply MSR to floating point R channel
-    MSRKernel(odataR, idata);
-
-    // Derive floating point G channel from integer G channel
-    if (d.fulls)
-    {
-        gain = 1 / sRangeFL;
-        for (j = 0; j < height; j++)
-        {
-            i = stride * j;
-            for (upper = i + width; i < upper; i++)
-                idata[i] = Gsrcp[i] * gain;
-        }
-    }
-    else
-    {
-        offset = -sFloorFL;
-        gain = 1 / static_cast<FLType>(sCeil - sFloor);
-        for (j = 0; j < height; j++)
-        {
-            i = stride * j;
-            for (upper = i + width; i < upper; i++)
-                idata[i] = (Gsrcp[i] + offset) * gain;
-        }
-    }
+    CopyIntensity(idata, 0);
+    MSRKernel(odataR, idata, 0);
 
     // Apply MSR to floating point G channel
-    MSRKernel(odataG, idata);
-
-    // Derive floating point B channel from integer B channel
-    if (d.fulls)
-    {
-        gain = 1 / sRangeFL;
-        for (j = 0; j < height; j++)
-        {
-            i = stride * j;
-            for (upper = i + width; i < upper; i++)
-                idata[i] = Bsrcp[i] * gain;
-        }
-    }
-    else
-    {
-        offset = -sFloorFL;
-        gain = 1 / static_cast<FLType>(sCeil - sFloor);
-        for (j = 0; j < height; j++)
-        {
-            i = stride * j;
-            for (upper = i + width; i < upper; i++)
-                idata[i] = (Bsrcp[i] + offset) * gain;
-        }
-    }
+    CopyIntensity(idata, 1);
+    MSRKernel(odataG, idata, 1);
 
     // Apply MSR to floating point B channel
-    MSRKernel(odataB, idata);
+    CopyIntensity(idata, 2);
+    MSRKernel(odataB, idata, 2);
 
     // Color restoration
     FLType RvalFL, GvalFL, BvalFL;

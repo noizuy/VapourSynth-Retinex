@@ -29,7 +29,7 @@ const VSFrame *VS_CC MSRCPGetFrame(int n, int activationReason, void *instanceDa
 
     if (activationReason == arInitial)
     {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
+        d->requestFrames(n, frameCtx);
     }
     else if (activationReason == arAllFramesReady)
     {
@@ -62,9 +62,17 @@ void VS_CC MSRCPCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core
         return;
     }
 
+    if (!d->buildGraph(core, out))
+    {
+        delete d;
+        return;
+    }
+
     // Create filter
-    VSFilterDependency deps[] = {{d->node, rpStrictSpatial}};
-    vsapi->createVideoFilter(out, "MSRCP", d->vi, MSRCPGetFrame, MSRCPFree, fmParallel, deps, 1, d, core);
+    std::vector<VSFilterDependency> deps;
+    d->fillDependencies(deps);
+    vsapi->createVideoFilter(out, "MSRCP", d->vi, MSRCPGetFrame, MSRCPFree, fmParallel,
+        deps.data(), static_cast<int>(deps.size()), d, core);
 }
 
 

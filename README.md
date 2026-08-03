@@ -47,7 +47,7 @@ For processing in YUV444 and RGB, the filtering results are different. The inten
 ### Usage
 
 ```python
-retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, float upper_thr=0.001, bool fulls, bool fulld=fulls, float chroma_protect=1.2)
+retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, float upper_thr=0.001, bool fulls, bool fulld=fulls, float chroma_protect=1.2, data[] device=["cpu"], int[] device_id=[0], int[] num_streams=[1], int[] tune=[])
 ```
 
 - input:<br />
@@ -82,6 +82,23 @@ retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, floa
     The base of log function to attenuate chroma adjustment. It could avoid extreme chroma amplifying, while the saturation of the result is changed.<br />
     Available range is [1, +inf), 1 means no attenuation.<br />
     It is only available for YUV/YCoCg input.
+
+- device: (Default: ["cpu"])<br />
+    Which backend performs the Gaussian blur for each scale in `sigma`, one of "cpu", "gpu" or "cuda":<br />
+    "cpu" uses [vapoursynth-resize2](https://github.com/Jaded-Encoding-Thaumaturgy/vapoursynth-resize2) (`dev.setsugen.resize2`) with a custom Gaussian kernel.<br />
+    "gpu" uses [vapoursynth-zipcl](https://github.com/dnjulek/vapoursynth-zipcl) (`com.julek.vszipcl`, OpenCL).<br />
+    "cuda" uses [vapoursynth-zipcu](https://github.com/dnjulek/vapoursynth-zipcu) (`com.julek.vszipcu`, CUDA).<br />
+    The corresponding plugin must be installed for whichever device(s) are selected.<br />
+    If fewer entries than `sigma` are given, the last entry is repeated for the remaining scales, so a single value applies to every scale.
+
+- device_id: (Default: [0])<br />
+    Which GPU/CUDA device to use, per scale (same repeat-last-if-shorter rule as `device`). Ignored for scales using "cpu".
+
+- num_streams: (Default: [1])<br />
+    Number of concurrent streams for the "gpu"/"cuda" backends, per scale (same repeat-last-if-shorter rule as `device`). Ignored for scales using "cpu".
+
+- tune: (Default: unset)<br />
+    OpenCL tuning parameter passed through to vapoursynth-zipcl, per scale (same repeat-last-if-shorter rule as `device`). Only used for scales using "gpu"; left at the plugin's own default when not given.
 
 ### Example
 
@@ -122,7 +139,7 @@ This function only accept 8-16bit integer RGB input.
 ### Usage
 
 ```python
-retinex.MSRCR(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, float upper_thr=0.001, bool fulls=True, bool fulld=fulls, float restore=125)
+retinex.MSRCR(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, float upper_thr=0.001, bool fulls=True, bool fulld=fulls, float restore=125, data[] device=["cpu"], int[] device_id=[0], int[] num_streams=[1], int[] tune=[])
 ```
 
 - input:<br />
@@ -146,6 +163,9 @@ retinex.MSRCR(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, floa
 - restore: (Default: 125)<br />
     The strength of the nonlinearity for color restoration function, larger value result in stronger restoration, available range is [0, +inf).<br />
     It is a multiplier in a log function, so try to adjust it in a large scale (e.g. multiply it by a power of 10) if you want to see any difference.
+
+- device, device_id, num_streams, tune:<br />
+    The same as MSRCP.
 
 ### Example
 

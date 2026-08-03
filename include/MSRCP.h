@@ -43,6 +43,15 @@ class MSRCPData
 public:
     double chroma_protect = MSRCPDefault.chroma_protect;
 
+private:
+    virtual void getChannels(std::vector<std::pair<IntensityMode, int>> &channels) const override
+    {
+        if (vi->format.colorFamily == cfRGB)
+            channels = { { IntensityMode::RGBAvg, 0 } };
+        else
+            channels = { { IntensityMode::Y, 0 } };
+    }
+
 public:
     MSRCPData(const VSAPI *_vsapi = nullptr, std::string _FunctionName = "MSRCP")
         : MSRData(_vsapi, _FunctionName) {}
@@ -51,7 +60,8 @@ public:
 
     virtual int arguments_process(const VSMap *in, VSMap *out)
     {
-        MSRData::arguments_process(in, out);
+        if (MSRData::arguments_process(in, out))
+            return 1;
 
         int error;
 
@@ -105,7 +115,6 @@ void MSRCPProcess::process_core()
 {
     int i, j, upper;
     FLType gain, offset, scale;
-    const T *Ysrcp;
     T *Ydstp;
 
     // Calculate quantization parameters according to bit per sample and limited/full range
@@ -124,7 +133,6 @@ void MSRCPProcess::process_core()
     //T dCeilC = d.fulld ? (1 << bps) - 1 : 240 << (bps - 8);
     T dRange = d.fulld ? (1 << bps) - 1 : 219 << (bps - 8);
     T dRangeC = d.fulld ? (1 << bps) - 1 : 224 << (bps - 8);
-    FLType sFloorFL = static_cast<FLType>(sFloor);
     //FLType sFloorCFL = static_cast<FLType>(sFloorC);
     //FLType sNeutralFL = static_cast<FLType>(sNeutral);
     //FLType sCeilFL = static_cast<FLType>(sCeil);
@@ -146,56 +154,15 @@ void MSRCPProcess::process_core()
 
     if (fi->colorFamily == cfGray) // Procedure for Gray color family
     {
-        // Get read and write pointer for src and dst
-        Ysrcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, 0));
+        // Get write pointer for dst
         Ydstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, 0));
 
-        // Derive floating point intensity channel from integer Y channel
-        if (d.fulls)
-        {
-            gain = 1 / sRangeFL;
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                    idata[i] = Ysrcp[i] * gain;
-            }
-        }
-        else
-        {
-            // If src is of limited range, determine the Floor and Ceil by the minimum and maximum value in the frame
-            T min, max;
-
-            min = sCeil;
-            max = sFloor;
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                {
-                    min = Min(min, Ysrcp[i]);
-                    max = Max(max, Ysrcp[i]);
-                }
-            }
-            if (max > min)
-            {
-                sFloor = min;
-                sCeil = max;
-                sFloorFL = static_cast<FLType>(sFloor);
-                //sCeilFL = static_cast<FLType>(sCeil);
-            }
-
-            gain = 1 / static_cast<FLType>(sCeil - sFloor);
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                    idata[i] = (Ysrcp[i] - sFloor) * gain;
-            }
-        }
+        // Intensity channel (already derived, normalized to [0,1], and blurred per scale by
+        // the Intensity/blur nodes built at filter creation)
+        CopyIntensity(idata, 0);
 
         // Apply MSR to floating point intensity channel
-        MSRKernel(odata, idata);
+        MSRKernel(odata, idata, 0);
         // Simplest color balance with pixel clipping on either side of the dynamic range
         SimplestColorBalance(odata, idata);
 
@@ -221,18 +188,10 @@ void MSRCPProcess::process_core()
         Bsrcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, 2));
         Bdstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, 2));
 
-        // Derive floating point intensity channel from integer RGB channel
-        if (d.fulls)
-        {
-            gain = 1 / (sRangeFL * 3);
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                    idata[i] = (Rsrcp[i] + Gsrcp[i] + Bsrcp[i]) * gain;
-            }
-        }
-        else
+        // sFloor/sCeil are still needed below to reconstruct the RGB output, so the
+        // limited-range detection stays here even though idata itself now comes from the
+        // Intensity node (which performs the same detection internally).
+        if (!d.fulls)
         {
             // If src is of limited range, determine the Floor and Ceil by the minimum and maximum value in the frame
             T min, max;
@@ -252,22 +211,16 @@ void MSRCPProcess::process_core()
             {
                 sFloor = min;
                 sCeil = max;
-                sFloorFL = static_cast<FLType>(sFloor);
                 //sCeilFL = static_cast<FLType>(sCeil);
-            }
-
-            offset = sFloorFL * -3;
-            gain = 1 / (static_cast<FLType>(sCeil - sFloor) * 3);
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                    idata[i] = (Rsrcp[i] + Gsrcp[i] + Bsrcp[i] + offset) * gain;
             }
         }
 
+        // Intensity channel (already derived, normalized to [0,1], and blurred per scale by
+        // the Intensity/blur nodes built at filter creation)
+        CopyIntensity(idata, 0);
+
         // Apply MSR to floating point intensity channel
-        MSRKernel(odata, idata);
+        MSRKernel(odata, idata, 0);
         // Simplest color balance with pixel clipping on either side of the dynamic range
         SimplestColorBalance(odata, idata);
 
@@ -320,59 +273,18 @@ void MSRCPProcess::process_core()
         const T *Usrcp, *Vsrcp;
         T *Udstp, *Vdstp;
 
-        Ysrcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, 0));
         Ydstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, 0));
         Usrcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, 1));
         Udstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, 1));
         Vsrcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, 2));
         Vdstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, 2));
 
-        // Derive floating point intensity channel from integer Y channel
-        if (d.fulls)
-        {
-            gain = 1 / sRangeFL;
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                    idata[i] = Ysrcp[i] * gain;
-            }
-        }
-        else
-        {
-            // If src is of limited range, determine the Floor and Ceil by the minimum and maximum value in the frame
-            T min, max;
-
-            min = sCeil;
-            max = sFloor;
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                {
-                    min = Min(min, Ysrcp[i]);
-                    max = Max(max, Ysrcp[i]);
-                }
-            }
-            if (max > min)
-            {
-                sFloor = min;
-                sCeil = max;
-                sFloorFL = static_cast<FLType>(sFloor);
-                //sCeilFL = static_cast<FLType>(sCeil);
-            }
-
-            gain = 1 / static_cast<FLType>(sCeil - sFloor);
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                    idata[i] = (Ysrcp[i] - sFloor) * gain;
-            }
-        }
+        // Intensity channel (already derived, normalized to [0,1], and blurred per scale by
+        // the Intensity/blur nodes built at filter creation)
+        CopyIntensity(idata, 0);
 
         // Apply MSR to floating point intensity channel
-        MSRKernel(odata, idata);
+        MSRKernel(odata, idata, 0);
         // Simplest color balance with pixel clipping on either side of the dynamic range
         SimplestColorBalance(odata, idata);
 
