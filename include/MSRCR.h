@@ -55,13 +55,13 @@ public:
 
         int error;
 
-        if (vi->format->colorFamily != cmRGB)
+        if (vi->format.colorFamily != cfRGB)
         {
             setError(out, "Invalid input clip, only RGB format input supported");
             return 1;
         }
 
-        restore = vsapi->propGetFloat(in, "restore", 0, &error);
+        restore = vsapi->mapGetFloat(in, "restore", 0, &error);
         if (error)
             restore = MSRCRDefault.restore;
         if (restore < 0)
@@ -128,10 +128,10 @@ void MSRCRProcess::process_core()
     //FLType dRangeFL = static_cast<FLType>(dRange);
 
     // Allocate floating point data buff
-    FLType *idata = vs_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-    FLType *odataR = vs_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-    FLType *odataG = vs_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-    FLType *odataB = vs_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *idata = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *odataR = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *odataG = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *odataB = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
 
     // Get read and write pointer for src and dst
     const T *Rsrcp, *Gsrcp, *Bsrcp;
@@ -273,10 +273,10 @@ void MSRCRProcess::process_core()
     SimplestColorBalance(Bdstp, odataB, Bsrcp, dFloor, dCeil);
 
     // Free floating point data buff
-    vs_aligned_free(idata);
-    vs_aligned_free(odataR);
-    vs_aligned_free(odataG);
-    vs_aligned_free(odataB);
+    vsh::vsh_aligned_free(idata);
+    vsh::vsh_aligned_free(odataR);
+    vsh::vsh_aligned_free(odataG);
+    vsh::vsh_aligned_free(odataB);
 }
 
 

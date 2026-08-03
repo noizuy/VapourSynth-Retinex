@@ -25,8 +25,8 @@
 #include <vector>
 #include <cmath>
 #include <cfloat>
-#include <vapoursynth/VapourSynth.h>
-#include <vapoursynth/VSHelper.h>
+#include <vapoursynth/VapourSynth4.h>
+#include <vapoursynth/VSHelper4.h>
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -122,7 +122,7 @@ template < typename T >
 T * newbuff(const T * src, int xoffset, int yoffset,
     int bufheight, int bufwidth, int bufstride, int height, int width, int stride)
 {
-    T * dst = vs_aligned_malloc<T>(sizeof(T)*bufheight*bufstride, Alignment);
+    T * dst = vsh::vsh_aligned_malloc<T>(sizeof(T)*bufheight*bufstride, Alignment);
     data2buff(dst, src, xoffset, yoffset, bufheight, bufwidth, bufstride, height, width, stride);
     return dst;
 }
@@ -130,7 +130,7 @@ T * newbuff(const T * src, int xoffset, int yoffset,
 template < typename T >
 void freebuff(T * buff)
 {
-    vs_aligned_free(buff);
+    vsh::vsh_aligned_free(buff);
 }
 
 
@@ -148,7 +148,7 @@ protected:
 
 public:
     const VSAPI *vsapi = nullptr;
-    VSNodeRef *node = nullptr;
+    VSNode *node = nullptr;
     const VSVideoInfo *vi = nullptr;
 
     int process[VSMaxPlaneCount];
@@ -157,7 +157,7 @@ protected:
     void setError(VSMap *out, const char *error_msg) const
     {
         std::string str = NameSpace + "." + FunctionName + ": " + error_msg;
-        vsapi->setError(out, str.c_str());
+        vsapi->mapSetError(out, str.c_str());
     }
 
 public:
@@ -188,9 +188,9 @@ private:
 protected:
     const VSAPI *vsapi = nullptr;
 
-    const VSFrameRef *src = nullptr;
-    const VSFormat *fi = nullptr;
-    VSFrameRef *dst = nullptr;
+    const VSFrame *src = nullptr;
+    const VSVideoFormat *fi = nullptr;
+    VSFrame *dst = nullptr;
 
     int PlaneCount;
     int Bps;
@@ -224,7 +224,7 @@ public:
         : d(_d), vsapi(_vsapi)
     {
         src = vsapi->getFrameFilter(n, d.node, frameCtx);
-        fi = vsapi->getFrameFormat(src);
+        fi = vsapi->getVideoFrameFormat(src);
 
         PlaneCount = fi->numPlanes;
         Bps = fi->bytesPerSample;
@@ -236,7 +236,7 @@ public:
         pcount = stride * height;
 
         int planes[VSMaxPlaneCount];
-        const VSFrameRef *cp_planes[VSMaxPlaneCount];
+        const VSFrame *cp_planes[VSMaxPlaneCount];
 
         for (int i = 0; i < VSMaxPlaneCount; i++)
         {
@@ -265,7 +265,7 @@ public:
         vsapi->freeFrame(src);
     }
 
-    VSFrameRef * process()
+    VSFrame * process()
     {
         int i;
 

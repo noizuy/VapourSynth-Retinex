@@ -32,7 +32,7 @@ int MSRProcess::MSRKernel(FLType *odata, const FLType *idata) const
     //FLType FloorFL = 0;
     //FLType CeilFL = 1;
 
-    FLType *gauss = vs_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *gauss = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
 
     for (j = 0; j < height; j++)
     {
@@ -77,7 +77,7 @@ int MSRProcess::MSRKernel(FLType *odata, const FLType *idata) const
             odata[i] = log(odata[i]) / static_cast<FLType>(scount);
     }
 
-    vs_aligned_free(gauss);
+    vsh::vsh_aligned_free(gauss);
 
     return 0;
 }
@@ -115,7 +115,7 @@ int MSRProcess::SimplestColorBalance(FLType *odata, const FLType *idata) const
         int h, HistBins = d.HistBins;
         int Count, MaxCount;
 
-        int *Histogram = vs_aligned_malloc<int>(sizeof(int)*HistBins, Alignment);
+        int *Histogram = vsh::vsh_aligned_malloc<int>(sizeof(int)*HistBins, Alignment);
         memset(Histogram, 0, sizeof(int)*HistBins);
 
         gain = (HistBins - 1) / (max - min);
@@ -155,7 +155,7 @@ int MSRProcess::SimplestColorBalance(FLType *odata, const FLType *idata) const
 
         max = h * gain + offset;
 
-        vs_aligned_free(Histogram);
+        vsh::vsh_aligned_free(Histogram);
     }
 
     gain = (CeilFL - FloorFL) / (max - min);

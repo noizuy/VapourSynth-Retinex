@@ -61,9 +61,9 @@ public:
 private:
     void fulls_select()
     {
-        if (vi->format->colorFamily == cmGray || vi->format->colorFamily == cmYUV)
+        if (vi->format.colorFamily == cfGray || vi->format.colorFamily == cfYUV)
             fulls = false;
-        else if (vi->format->colorFamily == cmRGB || vi->format->colorFamily == cmYCoCg)
+        else if (vi->format.colorFamily == cfRGB)
             fulls = true;
     }
 
@@ -78,31 +78,31 @@ public:
         int error;
         int i, m;
 
-        node = vsapi->propGetNode(in, "input", 0, nullptr);
+        node = vsapi->mapGetNode(in, "input", 0, nullptr);
         vi = vsapi->getVideoInfo(node);
 
-        if (!vi->format)
+        if (!vsh::isConstantVideoFormat(vi))
         {
             setError(out, "Invalid input clip, only constant format input supported");
             return 1;
         }
-        if (vi->format->sampleType != stInteger || (vi->format->bytesPerSample != 1 && vi->format->bytesPerSample != 2))
+        if (vi->format.sampleType != stInteger || (vi->format.bytesPerSample != 1 && vi->format.bytesPerSample != 2))
         {
             setError(out, "Invalid input clip, only 8-16 bit int formats supported");
             return 1;
         }
-        if (vi->format->subSamplingH || vi->format->subSamplingW)
+        if (vi->format.subSamplingH || vi->format.subSamplingW)
         {
             setError(out, "sub-sampled format is not supported, convert it to YUV444 or RGB first");
             return 1;
         }
 
-        m = vsapi->propNumElements(in, "sigma");
+        m = vsapi->mapNumElements(in, "sigma");
         if (m > 0)
         {
             for (i = 0; i < m; i++)
             {
-                sigma.push_back(vsapi->propGetFloat(in, "sigma", i, nullptr));
+                sigma.push_back(vsapi->mapGetFloat(in, "sigma", i, nullptr));
 
                 if (sigma[i] < 0)
                 {
@@ -128,7 +128,7 @@ public:
                 process[i] = 0;
         }
 
-        lower_thr = vsapi->propGetFloat(in, "lower_thr", 0, &error);
+        lower_thr = vsapi->mapGetFloat(in, "lower_thr", 0, &error);
         if (error)
             lower_thr = MSRDefault.lower_thr;
         if (lower_thr < 0)
@@ -137,7 +137,7 @@ public:
             return 1;
         }
 
-        upper_thr = vsapi->propGetFloat(in, "upper_thr", 0, &error);
+        upper_thr = vsapi->mapGetFloat(in, "upper_thr", 0, &error);
         if (error)
             upper_thr = MSRDefault.upper_thr;
         if (upper_thr < 0)
@@ -152,11 +152,11 @@ public:
             return 1;
         }
 
-        fulls = vsapi->propGetInt(in, "fulls", 0, &error) == 0 ? false : true;
+        fulls = vsapi->mapGetInt(in, "fulls", 0, &error) == 0 ? false : true;
         if (error)
             fulls_select();
 
-        fulld = vsapi->propGetInt(in, "fulld", 0, &error) == 0 ? false : true;
+        fulld = vsapi->mapGetInt(in, "fulld", 0, &error) == 0 ? false : true;
         if (error)
             fulld = fulls;
 
@@ -235,7 +235,7 @@ int MSRProcess::SimplestColorBalance(T *dst, FLType *odata, const T *src, T dFlo
         int h, HistBins = d.HistBins;
         int Count, MaxCount;
 
-        int *Histogram = vs_aligned_malloc<int>(sizeof(int)*HistBins, Alignment);
+        int *Histogram = vsh::vsh_aligned_malloc<int>(sizeof(int)*HistBins, Alignment);
         memset(Histogram, 0, sizeof(int)*HistBins);
 
         gain = (HistBins - 1) / (max - min);
@@ -275,7 +275,7 @@ int MSRProcess::SimplestColorBalance(T *dst, FLType *odata, const T *src, T dFlo
 
         max = h * gain + offset;
 
-        vs_aligned_free(Histogram);
+        vsh::vsh_aligned_free(Histogram);
     }
 
     gain = dRangeFL / (max - min);

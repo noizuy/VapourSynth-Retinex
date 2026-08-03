@@ -55,7 +55,7 @@ public:
 
         int error;
 
-        chroma_protect = vsapi->propGetFloat(in, "chroma_protect", 0, &error);
+        chroma_protect = vsapi->mapGetFloat(in, "chroma_protect", 0, &error);
         if (error)
             chroma_protect = MSRCPDefault.chroma_protect;
         if (chroma_protect < 1)
@@ -141,10 +141,10 @@ void MSRCPProcess::process_core()
     FLType dRangeCFL = static_cast<FLType>(dRangeC);
 
     // Allocate floating point data buff
-    FLType *idata = vs_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-    FLType *odata = vs_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *idata = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *odata = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
 
-    if (fi->colorFamily == cmGray) // Procedure for Gray color family
+    if (fi->colorFamily == cfGray) // Procedure for Gray color family
     {
         // Get read and write pointer for src and dst
         Ysrcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, 0));
@@ -208,7 +208,7 @@ void MSRCPProcess::process_core()
                 Ydstp[i] = static_cast<T>(odata[i] * dRangeFL + offset);
         }
     }
-    else if (fi->colorFamily == cmRGB) // Procedure for RGB color family
+    else if (fi->colorFamily == cfRGB) // Procedure for RGB color family
     {
         // Get read and write pointer for src and dst
         const T *Rsrcp, *Gsrcp, *Bsrcp;
@@ -314,7 +314,7 @@ void MSRCPProcess::process_core()
             }
         }
     }
-    else // Procedure for YUV or YCoCg color family
+    else // Procedure for YUV color family
     {
         // Get read and write pointer for src and dst
         const T *Usrcp, *Vsrcp;
@@ -413,8 +413,8 @@ void MSRCPProcess::process_core()
     }
 
     // Free floating point data buff
-    vs_aligned_free(idata);
-    vs_aligned_free(odata);
+    vsh::vsh_aligned_free(idata);
+    vsh::vsh_aligned_free(odata);
 }
 
 
