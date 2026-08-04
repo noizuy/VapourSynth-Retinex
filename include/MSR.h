@@ -195,13 +195,13 @@ public:
             BlurDevice dev;
             if (!ParseDevice(devStr, dev))
             {
-                setError(out, "Invalid \"device\" assigned, must be \"cpu\", \"gpu\" or \"cuda\"");
+                setError(out, "Invalid \"device\" assigned, must be \"cpu_box\", \"cpu_iir\", \"gpu\" or \"cuda\"");
                 return 1;
             }
             device.push_back(dev);
         }
         if (device.empty())
-            device.push_back(BlurDevice::CPU);
+            device.push_back(BlurDevice::CPU_BOX);
         while (device.size() < scount)
             device.push_back(device.back());
 

@@ -1,12 +1,6 @@
-# VapourSynth-Retinex
+# VapourSynth-Retinex2
 
-Retinex.dll | 2014 | mawen1250
-
-VapourSynth plugin
-
-namespace: retinex
-
-functions: MSRCP, MSRCR
+A bad fork of [VapourSynth-Retinex](https://github.com/HomeOfVapourSynthEvolution/VapourSynth-Retinex) with vibe coded features for alternative Gaussian blurs.
 
 ## Installation
 
@@ -83,12 +77,13 @@ retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, floa
     Available range is [1, +inf), 1 means no attenuation.<br />
     It is only available for YUV/YCoCg input.
 
-- device: (Default: ["cpu"])<br />
-    Which backend performs the Gaussian blur for each scale in `sigma`, one of "cpu", "gpu" or "cuda":<br />
-    "cpu" uses [vapoursynth-resize2](https://github.com/Jaded-Encoding-Thaumaturgy/vapoursynth-resize2) (`dev.setsugen.resize2`) with a custom Gaussian kernel.<br />
+- device: (Default: ["cpu_box"])<br />
+    Which implementation performs the Gaussian blur for each scale in `sigma`, one of "cpu_box", "cpu_iir", "gpu" or "cuda":<br />
+    "cpu_box" approximates the Gaussian with a 3-pass box blur (sliding-window sums), entirely in this plugin — no extra dependency, and its cost is independent of sigma.<br />
+    "cpu_iir" approximates the Gaussian with a single-pass Young/van Vliet 4th-order recursive filter, also entirely in this plugin and independent of sigma. Similar speed to "cpu_box"; either is a reasonable default.<br />
     "gpu" uses [vapoursynth-zipcl](https://github.com/dnjulek/vapoursynth-zipcl) (`com.julek.vszipcl`, OpenCL).<br />
     "cuda" uses [vapoursynth-zipcu](https://github.com/dnjulek/vapoursynth-zipcu) (`com.julek.vszipcu`, CUDA).<br />
-    The corresponding plugin must be installed for whichever device(s) are selected.<br />
+    The gpu/cuda plugin must be installed for whichever of those devices are selected.<br />
     If fewer entries than `sigma` are given, the last entry is repeated for the remaining scales, so a single value applies to every scale.
 
 - device_id: (Default: [0])<br />
@@ -192,12 +187,4 @@ PNG image(PC range RGB24) input, filtered in PC range RGB48, output PC range RGB
 i = core.lsmas.LWLibavSource(r'Image.png')
 i = core.fmtc.bitdepth(i, bits=16)
 i = core.retinex.MSRCR(i)
-```
-
-
-## Compilation
-
-```
-meson build
-ninja -C build
 ```

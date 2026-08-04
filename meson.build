@@ -5,7 +5,9 @@ project('Retinex', 'cpp',
 )
 
 sources = [
+  'source/BoxBlur.cpp',
   'source/Device.cpp',
+  'source/IirBlur.cpp',
   'source/Intensity.cpp',
   'source/MSR.cpp',
   'source/MSRCP.cpp',
