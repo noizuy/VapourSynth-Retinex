@@ -85,24 +85,12 @@ private:
     // channels[c] == (intensity mode, plane/channel index used when mode is RGBChannel).
     virtual void getChannels(std::vector<std::pair<IntensityMode, int>> &channels) const = 0;
 
-public:
-    MSRData(const VSAPI *_vsapi = nullptr, std::string _FunctionName = "MSR", std::string _NameSpace = "retinex")
-        : VSData(_vsapi, _FunctionName, _NameSpace) {}
-
-    virtual ~MSRData()
-    {
-        for (int c = 0; c < VSMaxPlaneCount; c++)
-        {
-            if (intensityNode[c]) vsapi->freeNode(intensityNode[c]);
-            for (VSNode *n : blurNode[c])
-                vsapi->freeNode(n);
-        }
-    }
-
-    virtual int arguments_process(const VSMap *in, VSMap *out)
+protected:
+    // Input format/range validation + lower_thr/upper_thr/fulls/fulld parsing: shared by
+    // every MSRData subclass regardless of how they estimate illumination per scale.
+    int parseCommon(const VSMap *in, VSMap *out)
     {
         int error;
-        int i, m;
 
         node = vsapi->mapGetNode(in, "input", 0, nullptr);
         vi = vsapi->getVideoInfo(node);
@@ -121,37 +109,6 @@ public:
         {
             setError(out, "sub-sampled format is not supported, convert it to YUV444 or RGB first");
             return 1;
-        }
-
-        m = vsapi->mapNumElements(in, "sigma");
-        if (m > 0)
-        {
-            for (i = 0; i < m; i++)
-            {
-                sigma.push_back(vsapi->mapGetFloat(in, "sigma", i, nullptr));
-
-                if (sigma[i] < 0)
-                {
-                    setError(out, "Invalid \"sigma\" assigned, must be non-negative float number");
-                    return 1;
-                }
-            }
-        }
-        else
-        {
-            sigma = MSRDefault.sigma;
-        }
-
-        size_t s, scount = sigma.size();
-
-        for (s = 0; s < scount; s++)
-        {
-            if (sigma[s] > 0) break;
-        }
-        if (s >= scount)
-        {
-            for (i = 0; i < VSMaxPlaneCount; i++)
-                process[i] = 0;
         }
 
         lower_thr = vsapi->mapGetFloat(in, "lower_thr", 0, &error);
@@ -185,6 +142,47 @@ public:
         fulld = vsapi->mapGetInt(in, "fulld", 0, &error) == 0 ? false : true;
         if (error)
             fulld = fulls;
+
+        return 0;
+    }
+
+    // sigma + device/device_id/num_streams/tune parsing, for Gaussian-blur-backed
+    // subclasses (MSRCPData/MSRCRData) only; a non-Gaussian subclass (e.g. GuidedRCPData)
+    // calls parseCommon() instead and parses its own scale parameters.
+    int parseGaussianScales(const VSMap *in, VSMap *out)
+    {
+        int i, m;
+
+        m = vsapi->mapNumElements(in, "sigma");
+        if (m > 0)
+        {
+            for (i = 0; i < m; i++)
+            {
+                sigma.push_back(vsapi->mapGetFloat(in, "sigma", i, nullptr));
+
+                if (sigma[i] < 0)
+                {
+                    setError(out, "Invalid \"sigma\" assigned, must be non-negative float number");
+                    return 1;
+                }
+            }
+        }
+        else
+        {
+            sigma = MSRDefault.sigma;
+        }
+
+        size_t s, scount = sigma.size();
+
+        for (s = 0; s < scount; s++)
+        {
+            if (sigma[s] > 0) break;
+        }
+        if (s >= scount)
+        {
+            for (i = 0; i < VSMaxPlaneCount; i++)
+                process[i] = 0;
+        }
 
         // device / device_id / num_streams / tune: one entry per sigma scale. Fewer entries
         // than sigma are allowed; the last given entry is repeated for the remaining scales.
@@ -248,9 +246,49 @@ public:
         return 0;
     }
 
-    // Builds the intensity-extraction and per-scale blur node graph. Must be called after
-    // arguments_process() succeeds and before the filter node itself is created. Returns
-    // false (and sets an error on out) on failure, e.g. a required backend plugin is missing.
+public:
+    MSRData(const VSAPI *_vsapi = nullptr, std::string _FunctionName = "MSR", std::string _NameSpace = "retinex")
+        : VSData(_vsapi, _FunctionName, _NameSpace) {}
+
+    virtual ~MSRData()
+    {
+        for (int c = 0; c < VSMaxPlaneCount; c++)
+        {
+            if (intensityNode[c]) vsapi->freeNode(intensityNode[c]);
+            for (VSNode *n : blurNode[c])
+                vsapi->freeNode(n);
+        }
+    }
+
+    virtual int arguments_process(const VSMap *in, VSMap *out)
+    {
+        if (parseCommon(in, out))
+            return 1;
+        if (parseGaussianScales(in, out))
+            return 1;
+        return 0;
+    }
+
+    // Number of illumination-estimate "scales" combined per channel. Default: one per
+    // sigma entry; a non-Gaussian subclass overrides this along with scaleActive() and
+    // buildScaleNode() below to key off its own per-scale parameters instead.
+    virtual size_t scaleCount() const { return sigma.size(); }
+
+    // Whether scale s contributes an actual filtered estimate, vs. the trivial "skip"
+    // case (sigma/radius <= 0) that contributes a constant factor instead.
+    virtual bool scaleActive(size_t s) const { return sigma[s] > 0; }
+
+    // Builds the illumination-estimate node for scale s of a given channel's intensity
+    // node. Only called when scaleActive(s) is true.
+    virtual VSNode *buildScaleNode(VSNode *channelNode, size_t s, VSCore *core, const VSAPI *vsapi, std::string &errMsg) const
+    {
+        return BuildGaussianBlurNode(channelNode, sigma[s], device[s], device_id[s], num_streams[s], tune[s], core, vsapi, errMsg);
+    }
+
+    // Builds the intensity-extraction and per-scale illumination-estimate node graph. Must
+    // be called after arguments_process() succeeds and before the filter node itself is
+    // created. Returns false (and sets an error on out) on failure, e.g. a required backend
+    // plugin is missing.
     bool buildGraph(VSCore *core, VSMap *out)
     {
         std::vector<std::pair<IntensityMode, int>> channels;
@@ -266,13 +304,12 @@ public:
                 return false;
             }
 
-            for (size_t s = 0; s < sigma.size(); s++)
+            for (size_t s = 0; s < scaleCount(); s++)
             {
-                if (sigma[s] <= 0) continue;
+                if (!scaleActive(s)) continue;
 
                 std::string errMsg;
-                VSNode *blurred = BuildGaussianBlurNode(intensityNode[c], sigma[s], device[s],
-                    device_id[s], num_streams[s], tune[s], core, vsapi, errMsg);
+                VSNode *blurred = buildScaleNode(intensityNode[c], s, core, vsapi, errMsg);
                 if (!blurred)
                 {
                     setError(out, errMsg.c_str());

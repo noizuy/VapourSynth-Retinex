@@ -19,6 +19,7 @@
 
 #include "MSRCP.h"
 #include "MSRCR.h"
+#include "GuidedRCP.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -42,6 +43,10 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI
     vspapi->registerFunction("MSRCR",
         (std::string("input:vnode;sigma:float[]:opt;lower_thr:float:opt;upper_thr:float:opt;fulls:int:opt;fulld:int:opt;restore:float:opt;") + DeviceArgs).c_str(),
         "clip:vnode;", MSRCRCreate, nullptr, plugin);
+
+    vspapi->registerFunction("Guided_RCP",
+        "input:vnode;radius:int:opt;eps:float:opt;subsample:int:opt;lower_thr:float:opt;upper_thr:float:opt;fulls:int:opt;fulld:int:opt;chroma_protect:float:opt;",
+        "clip:vnode;", GuidedRCPCreate, nullptr, plugin);
 }
 
 

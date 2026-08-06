@@ -41,7 +41,7 @@ For processing in YUV444 and RGB, the filtering results are different. The inten
 ### Usage
 
 ```python
-retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, float upper_thr=0.001, bool fulls, bool fulld=fulls, float chroma_protect=1.2, data[] device=["cpu"], int[] device_id=[0], int[] num_streams=[1], int[] tune=[])
+retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, float upper_thr=0.001, bool fulls, bool fulld=fulls, float chroma_protect=1.2, data[] device=["cpu_box"], int[] device_id=[0], int[] num_streams=[1], int[] tune=[])
 ```
 
 - input:<br />
@@ -134,7 +134,7 @@ This function only accept 8-16bit integer RGB input.
 ### Usage
 
 ```python
-retinex.MSRCR(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, float upper_thr=0.001, bool fulls=True, bool fulld=fulls, float restore=125, data[] device=["cpu"], int[] device_id=[0], int[] num_streams=[1], int[] tune=[])
+retinex.MSRCR(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, float upper_thr=0.001, bool fulls=True, bool fulld=fulls, float restore=125, data[] device=["cpu_box"], int[] device_id=[0], int[] num_streams=[1], int[] tune=[])
 ```
 
 - input:<br />
@@ -187,4 +187,46 @@ PNG image(PC range RGB24) input, filtered in PC range RGB48, output PC range RGB
 i = core.lsmas.LWLibavSource(r'Image.png')
 i = core.fmtc.bitdepth(i, bits=16)
 i = core.retinex.MSRCR(i)
+```
+
+## Guided_RCP
+
+### Description
+
+Guided_RCP is MSRCP with its illumination estimate computed by a [Fast Guided Filter](https://arxiv.org/abs/1505.00996) (He & Sun) instead of a Gaussian/box/IIR blur, applied to the same intensity channel and reconstructed into RGB/YUV/Gray output the same chromaticity-preserving way MSRCP does (same `lower_thr`/`upper_thr`/`fulls`/`fulld`/`chroma_protect` behavior — see MSRCP above).
+
+The guided filter is edge-aware: unlike a Gaussian blur, it doesn't smooth across strong edges, so the illumination estimate it produces has far less halo/ringing near hard edges (see [the reference implementation](https://github.com/accessify/guided-filter) this is based on). Because of that, a single guided filter application already gives a halo-free result — unlike MSRCP's `sigma`, there's no need for multiple scales or averaging, so `radius`/`eps` are single values, not arrays.
+
+The "fast" part of the Fast Guided Filter computes the filter's local statistics at a downsampled resolution (by a factor of `subsample`) and upsamples the result, since the guided filter's per-pixel cost is independent of `radius` (like the `cpu_box`/`cpu_iir` devices above) — the only way to speed it up further is processing fewer pixels.
+
+### Usage
+
+```python
+retinex.Guided_RCP(clip input, int radius=20, float eps=0.01, int subsample=4, float lower_thr=0.001, float upper_thr=0.001, bool fulls, bool fulld=fulls, float chroma_protect=1.2)
+```
+
+- input:<br />
+    clip to process
+
+- radius: (Default: 20)<br />
+    The guided filter's local window radius, in pixels. Larger values smooth over a wider area (similar role to MSRCP's `sigma`, but a single value since only one application is needed).<br />
+    0 disables filtering (the output is effectively unfiltered, same as a `sigma` scale of 0 in MSRCP).
+
+- eps: (Default: 0.01)<br />
+    The guided filter's regularization parameter, in the same [0,1]-normalized units as the intensity channel. Smaller values preserve edges more strongly (less smoothing across them); larger values behave more like an ordinary blur. Must be positive.
+
+- subsample: (Default: 4)<br />
+    Downsampling factor used by the fast guided filter algorithm to compute local statistics at reduced resolution before upsampling back to full size. 1 disables the speedup and computes at full resolution (slower, marginally more accurate). Should generally not exceed `radius`, or quality degrades since the downsampled window becomes too coarse relative to the requested radius.
+
+- lower_thr, upper_thr, fulls, fulld, chroma_protect:<br />
+    The same as MSRCP.
+
+### Example
+
+PNG image(PC range RGB24) input, filtered in PC range RGB48, output PC range RGB48
+
+```python
+i = core.lsmas.LWLibavSource(r'Image.png')
+i = core.fmtc.bitdepth(i, bits=16)
+i = core.retinex.Guided_RCP(i)
 ```

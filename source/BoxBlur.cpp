@@ -18,6 +18,7 @@
 
 
 #include "BoxBlur.h"
+#include "BoxFilter.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -49,75 +50,6 @@ void BoxRadiiForSigma(double sigma, int radii[3])
         int width = i < m ? wl : wu;
         radii[i] = Max((width - 1) / 2, 0);
     }
-}
-
-// Sliding-window box blur: O(width*height) regardless of radius. src/dst may be the same
-// buffer only if srcStride == dstStride (in-place row processing is safe since each output
-// row only depends on already-consumed input values within that same row).
-void BoxBlurHorizontal(const float *src, int srcStride, float *dst, int dstStride,
-    int width, int height, int radius)
-{
-    if (radius <= 0)
-    {
-        for (int y = 0; y < height; y++)
-            memcpy(dst + y * dstStride, src + y * srcStride, sizeof(float) * width);
-        return;
-    }
-
-    const float norm = 1.f / static_cast<float>(2 * radius + 1);
-
-    for (int y = 0; y < height; y++)
-    {
-        const float *srow = src + y * srcStride;
-        float *drow = dst + y * dstStride;
-
-        float sum = 0;
-        for (int x = -radius; x <= radius; x++)
-            sum += srow[Clip(x, 0, width - 1)];
-
-        for (int x = 0; x < width; x++)
-        {
-            drow[x] = sum * norm;
-            sum += srow[Clip(x + radius + 1, 0, width - 1)] - srow[Clip(x - radius, 0, width - 1)];
-        }
-    }
-}
-
-void BoxBlurVertical(const float *src, int srcStride, float *dst, int dstStride,
-    int width, int height, int radius)
-{
-    if (radius <= 0)
-    {
-        for (int y = 0; y < height; y++)
-            memcpy(dst + y * dstStride, src + y * srcStride, sizeof(float) * width);
-        return;
-    }
-
-    const float norm = 1.f / static_cast<float>(2 * radius + 1);
-
-    float *sum = vsh::vsh_aligned_malloc<float>(sizeof(float) * width, Alignment);
-    memset(sum, 0, sizeof(float) * width);
-
-    for (int y = -radius; y <= radius; y++)
-    {
-        const float *srow = src + Clip(y, 0, height - 1) * srcStride;
-        for (int x = 0; x < width; x++)
-            sum[x] += srow[x];
-    }
-
-    for (int y = 0; y < height; y++)
-    {
-        float *drow = dst + y * dstStride;
-        for (int x = 0; x < width; x++)
-            drow[x] = sum[x] * norm;
-
-        const float *addRow = src + Clip(y + radius + 1, 0, height - 1) * srcStride;
-        const float *subRow = src + Clip(y - radius, 0, height - 1) * srcStride;
-        for (int x = 0; x < width; x++)
-            sum[x] += addRow[x] - subRow[x];
-    }
-
-    vsh::vsh_aligned_free(sum);
 }
 
 
@@ -153,12 +85,12 @@ const VSFrame *VS_CC BoxBlurGetFrame(int n, int activationReason, void *instance
         float *bufA = vsh::vsh_aligned_malloc<float>(sizeof(float) * width * height, Alignment);
         float *bufB = vsh::vsh_aligned_malloc<float>(sizeof(float) * width * height, Alignment);
 
-        BoxBlurHorizontal(srcp, srcStride, bufA, width, width, height, d->radii[0]);
-        BoxBlurVertical(bufA, width, bufB, width, width, height, d->radii[0]);
-        BoxBlurHorizontal(bufB, width, bufA, width, width, height, d->radii[1]);
-        BoxBlurVertical(bufA, width, bufB, width, width, height, d->radii[1]);
-        BoxBlurHorizontal(bufB, width, bufA, width, width, height, d->radii[2]);
-        BoxBlurVertical(bufA, width, dstp, dstStride, width, height, d->radii[2]);
+        BoxFilterHorizontal(srcp, srcStride, bufA, width, width, height, d->radii[0]);
+        BoxFilterVertical(bufA, width, bufB, width, width, height, d->radii[0]);
+        BoxFilterHorizontal(bufB, width, bufA, width, width, height, d->radii[1]);
+        BoxFilterVertical(bufA, width, bufB, width, width, height, d->radii[1]);
+        BoxFilterHorizontal(bufB, width, bufA, width, width, height, d->radii[2]);
+        BoxFilterVertical(bufA, width, dstp, dstStride, width, height, d->radii[2]);
 
         vsh::vsh_aligned_free(bufA);
         vsh::vsh_aligned_free(bufB);

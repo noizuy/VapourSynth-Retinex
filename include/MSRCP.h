@@ -81,6 +81,11 @@ public:
 
 void VS_CC MSRCPCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi);
 
+// Declared here (rather than kept file-local to MSRCP.cpp) so other MSRCPData subclasses
+// with their own Create function - e.g. GuidedRCPData/GuidedRCPCreate - can reuse them.
+const VSFrame *VS_CC MSRCPGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi);
+void VS_CC MSRCPFree(void *instanceData, VSCore *core, const VSAPI *vsapi);
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

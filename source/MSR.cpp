@@ -53,12 +53,12 @@ int MSRProcess::MSRKernel(FLType *odata, const FLType *idata, int channel) const
             odata[i] = 1;
     }
 
-    size_t s, scount = d.sigma.size();
-    size_t blurIdx = 0; // advances only for scales with sigma > 0, matching blurFrame[channel]'s order
+    size_t s, scount = d.scaleCount();
+    size_t blurIdx = 0; // advances only for active scales, matching blurFrame[channel]'s order
 
     for (s = 0; s < scount; s++)
     {
-        if (d.sigma[s] > 0)
+        if (d.scaleActive(s))
         {
             const VSFrame *bf = blurFrame[channel][blurIdx++];
             const int gaussStride = static_cast<int>(vsapi->getStride(bf, 0) / sizeof(float));
