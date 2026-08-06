@@ -79,6 +79,7 @@ retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, floa
 
 - device: (Default: ["cpu_box"])<br />
     Which implementation performs the Gaussian blur for each scale in `sigma`, one of "cpu_box", "cpu_iir", "gpu" or "cuda":<br />
+    "cpu_ass" uses the [libass cascade blur](https://github.com/libass/libass/blob/master/libass/ass_blur.c), which provides a nice speed up with similar visual results for larger scales.<br />
     "cpu_box" approximates the Gaussian with a 3-pass box blur (sliding-window sums), entirely in this plugin — no extra dependency, and its cost is independent of sigma.<br />
     "cpu_iir" approximates the Gaussian with a single-pass Young/van Vliet 4th-order recursive filter, also entirely in this plugin and independent of sigma. Similar speed to "cpu_box"; either is a reasonable default.<br />
     "gpu" uses [vapoursynth-zipcl](https://github.com/dnjulek/vapoursynth-zipcl) (`com.julek.vszipcl`, OpenCL).<br />

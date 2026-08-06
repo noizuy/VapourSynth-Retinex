@@ -20,6 +20,7 @@
 #include "Device.h"
 #include "BoxBlur.h"
 #include "IirBlur.h"
+#include "AssBlur.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -29,6 +30,7 @@ bool ParseDevice(const std::string &str, BlurDevice &device)
 {
     if (str == "cpu_box") { device = BlurDevice::CPU_BOX; return true; }
     if (str == "cpu_iir") { device = BlurDevice::CPU_IIR; return true; }
+    if (str == "cpu_ass") { device = BlurDevice::ASS; return true; }
     if (str == "gpu") { device = BlurDevice::GPU; return true; }
     if (str == "cuda") { device = BlurDevice::CUDA; return true; }
     return false;
@@ -40,6 +42,7 @@ const char *DeviceName(BlurDevice device)
     {
     case BlurDevice::CPU_BOX: return "cpu_box";
     case BlurDevice::CPU_IIR: return "cpu_iir";
+    case BlurDevice::ASS: return "cpu_ass";
     case BlurDevice::GPU: return "gpu";
     case BlurDevice::CUDA: return "cuda";
     default: return "";
@@ -130,6 +133,13 @@ VSNode *BuildGaussianBlurNode(VSNode *src, double sigma, BlurDevice device,
         node = CreateIirBlurNode(src, sigma, core, vsapi);
         if (!node)
             errMsg = "failed to build the IIR blur node for the \"cpu_iir\" device";
+        break;
+
+    case BlurDevice::ASS:
+        // No external plugin needed: libass's pyramid cascade blur.
+        node = CreateAssBlurNode(src, sigma, core, vsapi);
+        if (!node)
+            errMsg = "failed to build the ASS cascade blur node for the \"cpu_ass\" device";
         break;
 
     default:

@@ -32,12 +32,13 @@ enum class BlurDevice
 {
     CPU_BOX,  // 3-pass box blur (BoxBlur.cpp), no external dependency
     CPU_IIR,  // single-pass Young/van Vliet recursive filter (IirBlur.cpp), no external dependency
+    ASS,      // libass's pyramid "Cascade Blur" (AssBlur.cpp), no external dependency
     GPU,      // com.julek.vszipcl (OpenCL)
     CUDA      // com.julek.vszipcu (CUDA)
 };
 
 
-// Returns false if str isn't one of "cpu_box", "cpu_iir", "gpu", "cuda".
+// Returns false if str isn't one of "cpu_box", "cpu_iir", "ass", "gpu", "cuda".
 bool ParseDevice(const std::string &str, BlurDevice &device);
 
 const char *DeviceName(BlurDevice device);

@@ -193,7 +193,7 @@ protected:
             BlurDevice dev;
             if (!ParseDevice(devStr, dev))
             {
-                setError(out, "Invalid \"device\" assigned, must be \"cpu_box\", \"cpu_iir\", \"gpu\" or \"cuda\"");
+                setError(out, "Invalid \"device\" assigned, must be \"cpu_box\", \"cpu_iir\", \"ass\", \"gpu\" or \"cuda\"");
                 return 1;
             }
             device.push_back(dev);
