@@ -73,6 +73,8 @@ void VS_CC MSRCPCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core
     d->fillDependencies(deps);
     vsapi->createVideoFilter(out, "MSRCP", d->vi, MSRCPGetFrame, MSRCPFree, fmParallel,
         deps.data(), static_cast<int>(deps.size()), d, core);
+    if (vsapi->mapGetError(out)) // the core doesn't free d on failure
+        delete d;
 }
 
 

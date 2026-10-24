@@ -76,61 +76,35 @@ inline T Round_Div(T dividend, T divisor)
 const size_t Alignment = 32;
 
 
-template < typename T >
-int stride_cal(int width)
+// Per-thread scratch memory reused across frames (no malloc/page faults per frame). Contents are undefined
+// on return and stay valid until the next call with the same slot on this thread. Slots in use:
+// 0 = filter's frame buffers (one per getFrame), 1 = BoxFilterVertical row sum.
+enum ScratchSlot { ScratchFrame, ScratchBoxSum, ScratchSlots };
+
+inline void *ScratchBytes(ScratchSlot slot, size_t bytes)
 {
-    size_t Alignment2 = Alignment / sizeof(T);
-    return static_cast<int>(width % Alignment2 == 0 ? width : (width / Alignment2 + 1) * Alignment2);
-}
-
-
-template < typename T >
-void data2buff(T * dst, const T * src, int xoffset, int yoffset,
-    int bufheight, int bufwidth, int bufstride, int height, int width, int stride)
-{
-    int x, y;
-    T *dstp;
-    const T *srcp;
-
-    for (y = 0; y < height; y++)
+    struct Block
     {
-        dstp = dst + (yoffset + y) * bufstride;
-        srcp = src + y * stride;
-        for (x = 0; x < xoffset; x++)
-            dstp[x] = srcp[0];
-        memcpy(dstp + xoffset, srcp, sizeof(T)*width);
-        for (x = xoffset + width; x < bufwidth; x++)
-            dstp[x] = srcp[width - 1];
-    }
+        void *p = nullptr;
+        size_t size = 0;
+        ~Block() { vsh::vsh_aligned_free(p); }
+    };
+    thread_local Block blocks[ScratchSlots];
 
-    srcp = dst + yoffset * bufstride;
-    for (y = 0; y < yoffset; y++)
+    Block &b = blocks[slot];
+    if (b.size < bytes)
     {
-        dstp = dst + y * bufstride;
-        memcpy(dstp, srcp, sizeof(T)*bufwidth);
+        vsh::vsh_aligned_free(b.p);
+        b.p = vsh::vsh_aligned_malloc(bytes, Alignment);
+        b.size = b.p ? bytes : 0;
     }
-
-    srcp = dst + (yoffset + height - 1) * bufstride;
-    for (y = yoffset + height; y < bufheight; y++)
-    {
-        dstp = dst + y * bufstride;
-        memcpy(dstp, srcp, sizeof(T)*bufwidth);
-    }
+    return b.p;
 }
 
 template < typename T >
-T * newbuff(const T * src, int xoffset, int yoffset,
-    int bufheight, int bufwidth, int bufstride, int height, int width, int stride)
+T *Scratch(ScratchSlot slot, size_t count)
 {
-    T * dst = vsh::vsh_aligned_malloc<T>(sizeof(T)*bufheight*bufstride, Alignment);
-    data2buff(dst, src, xoffset, yoffset, bufheight, bufwidth, bufstride, height, width, stride);
-    return dst;
-}
-
-template < typename T >
-void freebuff(T * buff)
-{
-    vsh::vsh_aligned_free(buff);
+    return static_cast<T *>(ScratchBytes(slot, sizeof(T) * count));
 }
 
 

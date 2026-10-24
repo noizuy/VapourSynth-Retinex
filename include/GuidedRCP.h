@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -29,11 +29,9 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-// Guided_RCP: the same chromaticity-preserving reconstruction as MSRCP (reused verbatim -
-// see getChannels()/MSRCPProcess below), but with the Gaussian-blur-based multi-scale
-// illumination estimate replaced by a single Fast Guided Filter pass, per the user's design
-// note that unlike MSRCP's Gaussian scales, guided filtering doesn't need multiple
-// applications or averaging to be halo-free. scaleCount() always returns 1.
+// Guided_RCP: MSRCP's chromaticity-preserving reconstruction with the multi-scale Gaussian
+// illumination estimate replaced by a single Fast Guided Filter pass (edge-aware, so a single
+// scale is enough to avoid halos). scaleCount() is always 1.
 class GuidedRCPData
     : public MSRCPData
 {
@@ -42,7 +40,10 @@ public:
     std::vector<double> eps;
     int subsample = 4;
 
-private:
+public:
+    GuidedRCPData(const VSAPI *_vsapi = nullptr)
+        : MSRCPData(_vsapi, "Guided_RCP") {}
+
     virtual size_t scaleCount() const override { return radius.size(); }
     virtual bool scaleActive(size_t s) const override { return radius[s] > 0; }
 
@@ -53,10 +54,6 @@ private:
             errMsg = "failed to build the guided filter node";
         return node;
     }
-
-public:
-    GuidedRCPData(const VSAPI *_vsapi = nullptr)
-        : MSRCPData(_vsapi, "Guided_RCP") {}
 
     virtual int arguments_process(const VSMap *in, VSMap *out) override
     {
@@ -100,16 +97,7 @@ public:
         }
         subsample = static_cast<int>(ss);
 
-        chroma_protect = vsapi->mapGetFloat(in, "chroma_protect", 0, &error);
-        if (error)
-            chroma_protect = MSRCPDefault.chroma_protect;
-        if (chroma_protect < 1)
-        {
-            setError(out, "Invalid \"chroma_protect\" assigned, must be float number ranges in [1, +inf)");
-            return 1;
-        }
-
-        return 0;
+        return parseChromaProtect(in, out);
     }
 };
 

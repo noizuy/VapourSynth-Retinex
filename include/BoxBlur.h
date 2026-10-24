@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -27,11 +27,8 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-// Builds a node approximating a Gaussian blur (sigma in pixels) of a single-plane GrayS
-// node via three passes of box blur (horizontal + vertical sliding-window sums), whose
-// radii are chosen following Kovesi's "Fast Almost-Gaussian Filtering". Cost per pixel is
-// O(1) regardless of sigma, unlike a literal windowed convolution. The returned node is a
-// new reference the caller must free.
+// Gaussian blur (sigma in pixels) of a GrayS node approximated by 3 box blurs, O(1) per pixel.
+// Returns a new node reference.
 VSNode *CreateBoxBlurNode(VSNode *src, double sigma, VSCore *core, const VSAPI *vsapi);
 
 

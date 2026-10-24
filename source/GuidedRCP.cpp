@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -39,12 +39,13 @@ void VS_CC GuidedRCPCreate(const VSMap *in, VSMap *out, void *userData, VSCore *
         return;
     }
 
-    // Create filter. MSRCPGetFrame/MSRCPFree operate generically on a MSRCPData reference,
-    // so they work unchanged for GuidedRCPData too.
+    // Create filter (MSRCPGetFrame/MSRCPFree work on any MSRCPData)
     std::vector<VSFilterDependency> deps;
     d->fillDependencies(deps);
     vsapi->createVideoFilter(out, "Guided_RCP", d->vi, MSRCPGetFrame, MSRCPFree, fmParallel,
         deps.data(), static_cast<int>(deps.size()), d, core);
+    if (vsapi->mapGetError(out)) // the core doesn't free d on failure
+        delete d;
 }
 
 

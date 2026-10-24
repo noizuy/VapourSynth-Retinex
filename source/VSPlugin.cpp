@@ -20,6 +20,7 @@
 #include "MSRCP.h"
 #include "MSRCR.h"
 #include "GuidedRCP.h"
+#include "GaussBlur.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -47,6 +48,11 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI
     vspapi->registerFunction("Guided_RCP",
         "input:vnode;radius:int:opt;eps:float:opt;subsample:int:opt;lower_thr:float:opt;upper_thr:float:opt;fulls:int:opt;fulld:int:opt;chroma_protect:float:opt;",
         "clip:vnode;", GuidedRCPCreate, nullptr, plugin);
+
+    // Diagnostic/test function: exposes the internal Gaussian blur backends directly.
+    vspapi->registerFunction("GaussBlur",
+        "clip:vnode;sigma:float;device:data:opt;",
+        "clip:vnode;", GaussBlurCreate, nullptr, plugin);
 }
 
 

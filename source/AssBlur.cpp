@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -16,18 +16,30 @@
 * along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+/*
+* Portions (the Cascade Blur algorithm and its coefficient solver) are ported from libass
+* (libass/ass_blur.c, libass/c/blur_template.h) and remain under the following license:
+*
+* Copyright (C) 2015 Vabishchevich Nikolay <vabnick@gmail.com>
+* Copyright (C) 2015-2022 libass contributors
+*
+* Permission to use, copy, modify, and distribute this software for any
+* purpose with or without fee is hereby granted, provided that the above
+* copyright notice and this permission notice appear in all copies.
+*
+* THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+* WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+* MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+* ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+* WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+* ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+* OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+*/
 
+
+#include <utility>
 #include "AssBlur.h"
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-// This file ports the numerical core of libass's "Cascade Blur" algorithm
-// (libass/c/ass_blur.c and libass/c/blur_template.h, Copyright (C) 2015 Vabishchevich
-// Nikolay, ISC-licensed) from fixed-point/SIMD-striped bitmaps to plain clamped-boundary
-// float buffers. See CreateAssBlurNode's declaration for how this adaptation differs from
-// the original.
+#include "PlaneFilter.h"
 
 
 namespace
@@ -39,7 +51,8 @@ struct AssBlurMethod
 {
     int level = 0;
     int radius = 4;
-    double coeff[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    float coeff[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    float center = 1; // 1 - 2 * sum(coeff)
 };
 
 // Samples of the normalized Gaussian PDF with variance r2: res[i] = sqrt(alpha/pi)*exp(-alpha*i^2), alpha = 1/(2*r2).
@@ -169,8 +182,13 @@ void FindBestMethod(AssBlurMethod &m, double r2)
         CalcCoeff(mu, m.radius, r2, mul);
     }
 
+    double dc = 1;
     for (int i = 0; i < m.radius; i++)
-        m.coeff[i] = mu[i];
+    {
+        m.coeff[i] = static_cast<float>(mu[i]);
+        dc -= 2 * mu[i];
+    }
+    m.center = static_cast<float>(dc);
 }
 
 
@@ -181,11 +199,14 @@ void FindBestMethod(AssBlurMethod &m, double r2)
 // canvas-growing boundary handling.
 void ShrinkHorz(const float *src, int w, int h, float *dst, int dw)
 {
+    // taps 2k-2..2k+3 need no clamping for k in [1, k1)
+    const int k1 = Max(1, Min(dw, (w - 4) / 2 + 1));
+
     for (int y = 0; y < h; y++)
     {
         const float *srow = src + y * w;
         float *drow = dst + y * dw;
-        for (int k = 0; k < dw; k++)
+        auto clamped = [&](int k)
         {
             drow[k] = (1 * srow[Clip(2 * k - 2, 0, w - 1)] +
                 5 * srow[Clip(2 * k - 1, 0, w - 1)] +
@@ -193,106 +214,132 @@ void ShrinkHorz(const float *src, int w, int h, float *dst, int dw)
                 10 * srow[Clip(2 * k + 1, 0, w - 1)] +
                 5 * srow[Clip(2 * k + 2, 0, w - 1)] +
                 1 * srow[Clip(2 * k + 3, 0, w - 1)]) / 32.f;
+        };
+
+        if (dw > 0) clamped(0);
+        for (int k = 1; k < k1; k++)
+        {
+            const float *p = srow + 2 * k - 2;
+            drow[k] = (1 * p[0] + 5 * p[1] + 10 * p[2] + 10 * p[3] + 5 * p[4] + 1 * p[5]) / 32.f;
         }
+        for (int k = k1; k < dw; k++)
+            clamped(k);
     }
 }
 
-void ShrinkVert(const float *src, int w, int h, float *dst, int dh)
+void ShrinkVert(const float *src, int srcStride, int w, int h, float *dst, int dh)
 {
     for (int k = 0; k < dh; k++)
     {
-        const float *r0 = src + Clip(2 * k - 2, 0, h - 1) * w;
-        const float *r1 = src + Clip(2 * k - 1, 0, h - 1) * w;
-        const float *r2 = src + Clip(2 * k + 0, 0, h - 1) * w;
-        const float *r3 = src + Clip(2 * k + 1, 0, h - 1) * w;
-        const float *r4 = src + Clip(2 * k + 2, 0, h - 1) * w;
-        const float *r5 = src + Clip(2 * k + 3, 0, h - 1) * w;
+        const float *r0 = src + Clip(2 * k - 2, 0, h - 1) * srcStride;
+        const float *r1 = src + Clip(2 * k - 1, 0, h - 1) * srcStride;
+        const float *r2 = src + Clip(2 * k + 0, 0, h - 1) * srcStride;
+        const float *r3 = src + Clip(2 * k + 1, 0, h - 1) * srcStride;
+        const float *r4 = src + Clip(2 * k + 2, 0, h - 1) * srcStride;
+        const float *r5 = src + Clip(2 * k + 3, 0, h - 1) * srcStride;
         float *drow = dst + k * w;
         for (int x = 0; x < w; x++)
             drow[x] = (1 * r0[x] + 5 * r1[x] + 10 * r2[x] + 10 * r3[x] + 5 * r4[x] + 1 * r5[x]) / 32.f;
     }
 }
 
-// Expand by 2 with kernel [5,10,1]/16 for even outputs, [1,10,5]/16 for odd outputs.
-// Writes only the first dw/dh outputs (dw/dh may be less than 2*w/2*h, to crop back to a
-// target size instead of libass's canvas growth).
+// Expand by 2 with kernel [5,10,1]/16 for even outputs, [1,10,5]/16 for odd outputs, from inputs
+// k-1, k, k+1 (shrink output k is centred at 2k+0.5; libass reads k-2..k as its canvas grows).
+// Writes only the first dw/dh outputs, cropping back to the pre-shrink size.
 void ExpandHorz(const float *src, int w, int h, float *dst, int dw)
 {
     for (int y = 0; y < h; y++)
     {
         const float *srow = src + y * w;
         float *drow = dst + y * dw;
-        for (int k = 0; k < w; k++)
+        auto clamped = [&](int k)
         {
-            const float p1 = srow[Clip(k - 2, 0, w - 1)];
-            const float z0 = srow[Clip(k - 1, 0, w - 1)];
-            const float n1 = srow[k];
+            const float p1 = srow[Clip(k - 1, 0, w - 1)];
+            const float z0 = srow[k];
+            const float n1 = srow[Clip(k + 1, 0, w - 1)];
             if (2 * k < dw)
                 drow[2 * k] = (5 * p1 + 10 * z0 + 1 * n1) / 16.f;
             if (2 * k + 1 < dw)
                 drow[2 * k + 1] = (1 * p1 + 10 * z0 + 5 * n1) / 16.f;
+        };
+
+        // dw >= 2*w - 1, so only the first and last k need clamping/cropping
+        clamped(0);
+        for (int k = 1; k < w - 1; k++)
+        {
+            const float p1 = srow[k - 1], z0 = srow[k], n1 = srow[k + 1];
+            drow[2 * k] = (5 * p1 + 10 * z0 + 1 * n1) / 16.f;
+            drow[2 * k + 1] = (1 * p1 + 10 * z0 + 5 * n1) / 16.f;
         }
+        if (w > 1)
+            clamped(w - 1);
     }
 }
 
-void ExpandVert(const float *src, int w, int h, float *dst, int dh)
+void ExpandVert(const float *src, int w, int h, float *dst, int dstStride, int dh)
 {
     for (int k = 0; k < h; k++)
     {
-        const float *rp = src + Clip(k - 2, 0, h - 1) * w;
-        const float *rz = src + Clip(k - 1, 0, h - 1) * w;
-        const float *rn = src + k * w;
+        const float *rp = src + Clip(k - 1, 0, h - 1) * w;
+        const float *rz = src + k * w;
+        const float *rn = src + Clip(k + 1, 0, h - 1) * w;
         if (2 * k < dh)
         {
-            float *drow = dst + 2 * k * w;
+            float *drow = dst + 2 * k * dstStride;
             for (int x = 0; x < w; x++)
                 drow[x] = (5 * rp[x] + 10 * rz[x] + 1 * rn[x]) / 16.f;
         }
         if (2 * k + 1 < dh)
         {
-            float *drow = dst + (2 * k + 1) * w;
+            float *drow = dst + (2 * k + 1) * dstStride;
             for (int x = 0; x < w; x++)
                 drow[x] = (1 * rp[x] + 10 * rz[x] + 5 * rn[x]) / 16.f;
         }
     }
 }
 
-// The small (radius <= 8 tap) parametric blur applied at the reduced resolution: a
-// symmetric FIR filter with center weight d = 1 - 2*sum(coeff) and side weights coeff[i-1]
-// at offsets +-i, per blur_template.h's "Main Parametric Filters" comment.
-void AssBlurHorz(const float *src, int w, int h, float *dst, int radius, const double *coeff)
+// Symmetric FIR at the reduced resolution: centre weight d, coeff[i-1] at offsets +-i.
+void AssBlurHorz(const float *src, int srcStride, int w, int h, float *dst, int radius, const float *coeff, float d)
 {
-    double d = 1.;
-    for (int i = 0; i < radius; i++) d -= 2 * coeff[i];
+    const int x0 = Min(radius, w);
+    const int x1 = Max(x0, w - radius);
 
     for (int y = 0; y < h; y++)
     {
-        const float *srow = src + y * w;
+        const float *srow = src + y * srcStride;
         float *drow = dst + y * w;
+
         for (int x = 0; x < w; x++)
+            drow[x] = d * srow[x];
+        for (int i = 1; i <= radius; i++)
         {
-            double acc = d * srow[x];
-            for (int i = 1; i <= radius; i++)
-                acc += coeff[i - 1] * (srow[Clip(x - i, 0, w - 1)] + srow[Clip(x + i, 0, w - 1)]);
-            drow[x] = static_cast<float>(acc);
+            const float c = coeff[i - 1];
+            for (int x = 0; x < x0; x++)
+                drow[x] += c * (srow[Max(x - i, 0)] + srow[Min(x + i, w - 1)]);
+            for (int x = x0; x < x1; x++)
+                drow[x] += c * (srow[x - i] + srow[x + i]);
+            for (int x = x1; x < w; x++)
+                drow[x] += c * (srow[Max(x - i, 0)] + srow[Min(x + i, w - 1)]);
         }
     }
 }
 
-void AssBlurVert(const float *src, int w, int h, float *dst, int radius, const double *coeff)
+void AssBlurVert(const float *src, int w, int h, float *dst, int dstStride, int radius, const float *coeff, float d)
 {
-    double d = 1.;
-    for (int i = 0; i < radius; i++) d -= 2 * coeff[i];
-
     for (int y = 0; y < h; y++)
     {
-        float *drow = dst + y * w;
+        const float *srow = src + y * w;
+        float *drow = dst + y * dstStride;
+
         for (int x = 0; x < w; x++)
+            drow[x] = d * srow[x];
+        for (int i = 1; i <= radius; i++)
         {
-            double acc = d * src[y * w + x];
-            for (int i = 1; i <= radius; i++)
-                acc += coeff[i - 1] * (src[Clip(y - i, 0, h - 1) * w + x] + src[Clip(y + i, 0, h - 1) * w + x]);
-            drow[x] = static_cast<float>(acc);
+            const float c = coeff[i - 1];
+            const float *rm = src + Max(y - i, 0) * w;
+            const float *rp = src + Min(y + i, h - 1) * w;
+            for (int x = 0; x < w; x++)
+                drow[x] += c * (rm[x] + rp[x]);
         }
     }
 }
@@ -301,141 +348,83 @@ void AssBlurVert(const float *src, int w, int h, float *dst, int radius, const d
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-struct AssBlurData
+struct AssBlurKernel
 {
-    VSNode *node = nullptr;
-    VSVideoInfo vi{};
     AssBlurMethod method;
-};
 
-const VSFrame *VS_CC AssBlurGetFrame(int n, int activationReason, void *instanceData, void **frameData,
-    VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
-{
-    const AssBlurData *d = reinterpret_cast<const AssBlurData *>(instanceData);
-
-    if (activationReason == arInitial)
+    void operator()(const float *srcp, int srcStride, float *dstp, int dstStride, int width, int height) const
     {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
-    }
-    else if (activationReason == arAllFramesReady)
-    {
-        const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
+        const AssBlurMethod &m = method;
 
-        const int width = vsapi->getFrameWidth(src, 0);
-        const int height = vsapi->getFrameHeight(src, 0);
-        const int srcStride = static_cast<int>(vsapi->getStride(src, 0) / sizeof(float));
-        const float *srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, 0));
-
-        VSFrame *dst = vsapi->newVideoFrame(&d->vi.format, width, height, src, core);
-        const int dstStride = static_cast<int>(vsapi->getStride(dst, 0) / sizeof(float));
-        float *dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, 0));
-
-        const AssBlurMethod &m = d->method;
-
-        // Dimensions after each of the `level` shrink steps, so the matching expand steps
-        // can crop back to precisely the original width/height (see ExpandHorz/Vert).
+        // sizes after each shrink step, for the expand steps to crop back to
         std::vector<int> wDims = { width }, hDims = { height };
         for (int i = 0; i < m.level; i++) wDims.push_back((wDims.back() + 1) / 2);
         for (int i = 0; i < m.level; i++) hDims.push_back((hDims.back() + 1) / 2);
 
-        float *cur = vsh::vsh_aligned_malloc<float>(sizeof(float) * width * height, Alignment);
-        for (int y = 0; y < height; y++)
-            memcpy(cur + y * width, srcp + y * srcStride, sizeof(float) * width);
-
+        // ping-pong buffers; the first step reads src and the last one writes dst
+        const size_t frameSize = size_t(width) * height;
+        float *cur = Scratch<float>(ScratchFrame, 2 * frameSize);
+        float *next = cur + frameSize;
         int curW = width, curH = height;
 
-        // libass shrinks vertically then horizontally, and expands horizontally then
-        // vertically; kept in the same order here for fidelity (mostly immaterial since
-        // sigma is isotropic, but matches the reference exactly).
+        // same order as libass: shrink V then H, expand H then V
+        const float *in = srcp;
+        int inStride = srcStride;
         for (int i = 0; i < m.level; i++)
         {
             const int newH = hDims[i + 1];
-            float *next = vsh::vsh_aligned_malloc<float>(sizeof(float) * curW * newH, Alignment);
-            ShrinkVert(cur, curW, curH, next, newH);
-            vsh::vsh_aligned_free(cur);
-            cur = next;
+            ShrinkVert(in, inStride, curW, curH, next, newH);
+            std::swap(cur, next);
+            in = cur;
+            inStride = curW;
             curH = newH;
         }
         for (int i = 0; i < m.level; i++)
         {
             const int newW = wDims[i + 1];
-            float *next = vsh::vsh_aligned_malloc<float>(sizeof(float) * newW * curH, Alignment);
             ShrinkHorz(cur, curW, curH, next, newW);
-            vsh::vsh_aligned_free(cur);
-            cur = next;
+            std::swap(cur, next);
             curW = newW;
         }
 
+        AssBlurHorz(m.level ? cur : srcp, m.level ? curW : srcStride, curW, curH, next, m.radius, m.coeff, m.center);
+        std::swap(cur, next);
+        if (m.level == 0)
         {
-            float *tmp = vsh::vsh_aligned_malloc<float>(sizeof(float) * curW * curH, Alignment);
-            AssBlurHorz(cur, curW, curH, tmp, m.radius, m.coeff);
-            vsh::vsh_aligned_free(cur);
-            cur = tmp;
-
-            tmp = vsh::vsh_aligned_malloc<float>(sizeof(float) * curW * curH, Alignment);
-            AssBlurVert(cur, curW, curH, tmp, m.radius, m.coeff);
-            vsh::vsh_aligned_free(cur);
-            cur = tmp;
+            AssBlurVert(cur, curW, curH, dstp, dstStride, m.radius, m.coeff, m.center);
         }
-
-        for (int i = 0; i < m.level; i++)
+        else
         {
-            const int newW = wDims[m.level - 1 - i];
-            float *next = vsh::vsh_aligned_malloc<float>(sizeof(float) * newW * curH, Alignment);
-            ExpandHorz(cur, curW, curH, next, newW);
-            vsh::vsh_aligned_free(cur);
-            cur = next;
-            curW = newW;
-        }
-        for (int i = 0; i < m.level; i++)
-        {
-            const int newH = hDims[m.level - 1 - i];
-            float *next = vsh::vsh_aligned_malloc<float>(sizeof(float) * curW * newH, Alignment);
-            ExpandVert(cur, curW, curH, next, newH);
-            vsh::vsh_aligned_free(cur);
-            cur = next;
-            curH = newH;
-        }
+            AssBlurVert(cur, curW, curH, next, curW, m.radius, m.coeff, m.center);
+            std::swap(cur, next);
 
-        for (int y = 0; y < height; y++)
-            memcpy(dstp + y * dstStride, cur + y * width, sizeof(float) * width);
-
-        vsh::vsh_aligned_free(cur);
-        vsapi->freeFrame(src);
-        return dst;
+            for (int i = 0; i < m.level; i++)
+            {
+                const int newW = wDims[m.level - 1 - i];
+                ExpandHorz(cur, curW, curH, next, newW);
+                std::swap(cur, next);
+                curW = newW;
+            }
+            for (int i = 0; i < m.level; i++)
+            {
+                const int newH = hDims[m.level - 1 - i];
+                const bool last = i == m.level - 1;
+                ExpandVert(cur, curW, curH, last ? dstp : next, last ? dstStride : curW, newH);
+                std::swap(cur, next);
+                curH = newH;
+            }
+        }
     }
-
-    return nullptr;
-}
-
-void VS_CC AssBlurFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
-{
-    AssBlurData *d = reinterpret_cast<AssBlurData *>(instanceData);
-    vsapi->freeNode(d->node);
-    delete d;
-}
+};
 
 } // namespace
 
 
 VSNode *CreateAssBlurNode(VSNode *src, double sigma, VSCore *core, const VSAPI *vsapi)
 {
-    AssBlurData *d = new AssBlurData();
-    d->node = vsapi->addNodeRef(src);
-    d->vi = *vsapi->getVideoInfo(src);
-    FindBestMethod(d->method, sigma * sigma);
-
-    VSFilterDependency dep = { src, rpStrictSpatial };
-    VSNode *node = vsapi->createVideoFilter2("RetinexAssBlur", &d->vi, AssBlurGetFrame, AssBlurFree,
-        fmParallel, &dep, 1, d, core);
-
-    if (!node)
-    {
-        vsapi->freeNode(d->node);
-        delete d;
-    }
-
-    return node;
+    AssBlurKernel k;
+    FindBestMethod(k.method, sigma * sigma);
+    return CreatePlaneFilterNode("RetinexAssBlur", src, k, core, vsapi);
 }
 
 

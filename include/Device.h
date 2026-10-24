@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -32,24 +32,24 @@ enum class BlurDevice
 {
     CPU_BOX,  // 3-pass box blur (BoxBlur.cpp), no external dependency
     CPU_IIR,  // single-pass Young/van Vliet recursive filter (IirBlur.cpp), no external dependency
-    ASS,      // libass's pyramid "Cascade Blur" (AssBlur.cpp), no external dependency
+    CPU_ASS,  // libass's pyramid "Cascade Blur" (AssBlur.cpp), no external dependency
     GPU,      // com.julek.vszipcl (OpenCL)
     CUDA      // com.julek.vszipcu (CUDA)
 };
 
 
-// Returns false if str isn't one of "cpu_box", "cpu_iir", "ass", "gpu", "cuda".
+// Returns false if str isn't a valid device name.
 bool ParseDevice(const std::string &str, BlurDevice &device);
 
 const char *DeviceName(BlurDevice device);
 
+// The valid device names, quoted, for error messages: "cpu_box", ... or "cuda"
+const std::string &DeviceNameList();
 
-// Builds a node that outputs a Gaussian blur (sigma in pixels) of a single-plane GrayS node,
-// dispatching to the plugin backing the requested device. The returned node is a new
-// reference the caller must free. Returns nullptr and fills errMsg on failure (e.g. the
-// backing plugin isn't installed).
-//
-// tune is only used for the gpu device; pass -1 to leave it at the plugin's own default.
+
+// Gaussian blur (sigma in pixels) of a GrayS node on the given device. Returns a new node
+// reference, or nullptr with errMsg set (e.g. the backing plugin isn't installed).
+// tune is only used by gpu; -1 keeps the plugin's default.
 VSNode *BuildGaussianBlurNode(VSNode *src, double sigma, BlurDevice device,
     int64_t device_id, int64_t num_streams, int64_t tune,
     VSCore *core, const VSAPI *vsapi, std::string &errMsg);

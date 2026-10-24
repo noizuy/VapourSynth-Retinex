@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -44,10 +44,24 @@ void BoxFilterHorizontal(const float *src, int srcStride, float *dst, int dstStr
         for (int x = -radius; x <= radius; x++)
             sum += srow[Clip(x, 0, width - 1)];
 
-        for (int x = 0; x < width; x++)
+        // Clamped borders, unclamped interior [x0, x1) where x - radius >= 0 and x + radius + 1 <= width - 1
+        const int x0 = Min(radius, width);
+        const int x1 = Max(x0, width - radius - 1);
+        int x = 0;
+        for (; x < x0; x++)
         {
             drow[x] = sum * norm;
-            sum += srow[Clip(x + radius + 1, 0, width - 1)] - srow[Clip(x - radius, 0, width - 1)];
+            sum += srow[Min(x + radius + 1, width - 1)] - srow[0];
+        }
+        for (; x < x1; x++)
+        {
+            drow[x] = sum * norm;
+            sum += srow[x + radius + 1] - srow[x - radius];
+        }
+        for (; x < width; x++)
+        {
+            drow[x] = sum * norm;
+            sum += srow[width - 1] - srow[Max(x - radius, 0)];
         }
     }
 }
@@ -64,7 +78,7 @@ void BoxFilterVertical(const float *src, int srcStride, float *dst, int dstStrid
 
     const float norm = 1.f / static_cast<float>(2 * radius + 1);
 
-    float *sum = vsh::vsh_aligned_malloc<float>(sizeof(float) * width, Alignment);
+    float *sum = Scratch<float>(ScratchBoxSum, width);
     memset(sum, 0, sizeof(float) * width);
 
     for (int y = -radius; y <= radius; y++)
@@ -77,16 +91,14 @@ void BoxFilterVertical(const float *src, int srcStride, float *dst, int dstStrid
     for (int y = 0; y < height; y++)
     {
         float *drow = dst + y * dstStride;
+        const float *addRow = src + Min(y + radius + 1, height - 1) * srcStride;
+        const float *subRow = src + Max(y - radius, 0) * srcStride;
         for (int x = 0; x < width; x++)
+        {
             drow[x] = sum[x] * norm;
-
-        const float *addRow = src + Clip(y + radius + 1, 0, height - 1) * srcStride;
-        const float *subRow = src + Clip(y - radius, 0, height - 1) * srcStride;
-        for (int x = 0; x < width; x++)
             sum[x] += addRow[x] - subRow[x];
+        }
     }
-
-    vsh::vsh_aligned_free(sum);
 }
 
 

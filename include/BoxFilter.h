@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -27,10 +27,8 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-// Sliding-window box (mean) filter: O(width*height) regardless of radius, using clamp-to-edge
-// boundary handling. src/dst may be the same buffer only if srcStride == dstStride.
-// Shared by BoxBlur.cpp (as a building block for a multi-pass Gaussian approximation) and
-// GuidedFilter.cpp (as the guided filter's core local-statistics primitive).
+// Sliding-window box (mean) filter with clamp-to-edge borders, O(1) per pixel regardless of radius.
+// src and dst must not overlap (the window's trailing edge reads already-written positions).
 void BoxFilterHorizontal(const float *src, int srcStride, float *dst, int dstStride,
     int width, int height, int radius);
 

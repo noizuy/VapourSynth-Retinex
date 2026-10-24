@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -26,27 +26,63 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
+namespace
+{
+
+const struct
+{
+    const char *name;
+    BlurDevice device;
+} DeviceTable[] =
+{
+    { "cpu_box", BlurDevice::CPU_BOX },
+    { "cpu_iir", BlurDevice::CPU_IIR },
+    { "cpu_ass", BlurDevice::CPU_ASS },
+    { "gpu", BlurDevice::GPU },
+    { "cuda", BlurDevice::CUDA }
+};
+
+} // namespace
+
+
 bool ParseDevice(const std::string &str, BlurDevice &device)
 {
-    if (str == "cpu_box") { device = BlurDevice::CPU_BOX; return true; }
-    if (str == "cpu_iir") { device = BlurDevice::CPU_IIR; return true; }
-    if (str == "cpu_ass") { device = BlurDevice::ASS; return true; }
-    if (str == "gpu") { device = BlurDevice::GPU; return true; }
-    if (str == "cuda") { device = BlurDevice::CUDA; return true; }
+    for (const auto &e : DeviceTable)
+    {
+        if (str == e.name)
+        {
+            device = e.device;
+            return true;
+        }
+    }
     return false;
 }
 
 const char *DeviceName(BlurDevice device)
 {
-    switch (device)
+    for (const auto &e : DeviceTable)
     {
-    case BlurDevice::CPU_BOX: return "cpu_box";
-    case BlurDevice::CPU_IIR: return "cpu_iir";
-    case BlurDevice::ASS: return "cpu_ass";
-    case BlurDevice::GPU: return "gpu";
-    case BlurDevice::CUDA: return "cuda";
-    default: return "";
+        if (e.device == device)
+            return e.name;
     }
+    return "";
+}
+
+const std::string &DeviceNameList()
+{
+    static const std::string list = []
+    {
+        const size_t n = sizeof(DeviceTable) / sizeof(DeviceTable[0]);
+        std::string str;
+        for (size_t i = 0; i < n; i++)
+        {
+            if (i > 0)
+                str += i + 1 < n ? ", " : " or ";
+            str += std::string("\"") + DeviceTable[i].name + "\"";
+        }
+        return str;
+    }();
+    return list;
 }
 
 
@@ -121,22 +157,18 @@ VSNode *BuildGaussianBlurNode(VSNode *src, double sigma, BlurDevice device,
     switch (device)
     {
     case BlurDevice::CPU_BOX:
-        // No external plugin needed: a 3-pass box blur approximates the Gaussian in O(1)
-        // time per pixel regardless of sigma (unlike a literal windowed convolution).
         node = CreateBoxBlurNode(src, sigma, core, vsapi);
         if (!node)
             errMsg = "failed to build the box blur node for the \"cpu_box\" device";
         break;
 
     case BlurDevice::CPU_IIR:
-        // No external plugin needed: a single-pass recursive (IIR) filter, O(1) per pixel.
         node = CreateIirBlurNode(src, sigma, core, vsapi);
         if (!node)
             errMsg = "failed to build the IIR blur node for the \"cpu_iir\" device";
         break;
 
-    case BlurDevice::ASS:
-        // No external plugin needed: libass's pyramid cascade blur.
+    case BlurDevice::CPU_ASS:
         node = CreateAssBlurNode(src, sigma, core, vsapi);
         if (!node)
             errMsg = "failed to build the ASS cascade blur node for the \"cpu_ass\" device";

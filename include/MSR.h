@@ -66,9 +66,8 @@ public:
     std::vector<int64_t> num_streams;
     std::vector<int64_t> tune; // -1 means "not specified" (gpu/OpenCL only)
 
-    // Built by buildGraph() once arguments are known: one intensity node per channel
-    // (1 for MSRCP, 3 - R/G/B - for MSRCR), and per channel one blurred node per active
-    // (sigma > 0) scale, in the same order as sigma itself.
+    // Built by buildGraph(): per channel (1 for MSRCP, R/G/B for MSRCR) an intensity node and
+    // one illumination node per active scale, in scale order.
     int channelCount = 0;
     VSNode *intensityNode[VSMaxPlaneCount] = { nullptr, nullptr, nullptr };
     std::vector<VSNode *> blurNode[VSMaxPlaneCount];
@@ -86,8 +85,7 @@ private:
     virtual void getChannels(std::vector<std::pair<IntensityMode, int>> &channels) const = 0;
 
 protected:
-    // Input format/range validation + lower_thr/upper_thr/fulls/fulld parsing: shared by
-    // every MSRData subclass regardless of how they estimate illumination per scale.
+    // input, lower_thr, upper_thr, fulls, fulld
     int parseCommon(const VSMap *in, VSMap *out)
     {
         int error;
@@ -146,9 +144,7 @@ protected:
         return 0;
     }
 
-    // sigma + device/device_id/num_streams/tune parsing, for Gaussian-blur-backed
-    // subclasses (MSRCPData/MSRCRData) only; a non-Gaussian subclass (e.g. GuidedRCPData)
-    // calls parseCommon() instead and parses its own scale parameters.
+    // sigma, device, device_id, num_streams, tune (Gaussian-blur-backed subclasses only)
     int parseGaussianScales(const VSMap *in, VSMap *out)
     {
         int i, m;
@@ -160,9 +156,9 @@ protected:
             {
                 sigma.push_back(vsapi->mapGetFloat(in, "sigma", i, nullptr));
 
-                if (sigma[i] < 0)
+                if (!std::isfinite(sigma[i]) || sigma[i] < 0)
                 {
-                    setError(out, "Invalid \"sigma\" assigned, must be non-negative float number");
+                    setError(out, "Invalid \"sigma\" assigned, must be a finite non-negative float number");
                     return 1;
                 }
             }
@@ -184,8 +180,7 @@ protected:
                 process[i] = 0;
         }
 
-        // device / device_id / num_streams / tune: one entry per sigma scale. Fewer entries
-        // than sigma are allowed; the last given entry is repeated for the remaining scales.
+        // one entry per sigma scale; the last given entry is repeated for the remaining scales
         m = vsapi->mapNumElements(in, "device");
         for (i = 0; i < m; i++)
         {
@@ -193,7 +188,7 @@ protected:
             BlurDevice dev;
             if (!ParseDevice(devStr, dev))
             {
-                setError(out, "Invalid \"device\" assigned, must be \"cpu_box\", \"cpu_iir\", \"ass\", \"gpu\" or \"cuda\"");
+                setError(out, ("Invalid \"device\" assigned, must be " + DeviceNameList()).c_str());
                 return 1;
             }
             device.push_back(dev);
@@ -260,7 +255,7 @@ public:
         }
     }
 
-    virtual int arguments_process(const VSMap *in, VSMap *out)
+    virtual int arguments_process(const VSMap *in, VSMap *out) override
     {
         if (parseCommon(in, out))
             return 1;
@@ -269,28 +264,26 @@ public:
         return 0;
     }
 
-    // Number of illumination-estimate "scales" combined per channel. Default: one per
-    // sigma entry; a non-Gaussian subclass overrides this along with scaleActive() and
-    // buildScaleNode() below to key off its own per-scale parameters instead.
+    // Illumination-estimate scales per channel; a non-Gaussian subclass overrides these three.
     virtual size_t scaleCount() const { return sigma.size(); }
 
-    // Whether scale s contributes an actual filtered estimate, vs. the trivial "skip"
-    // case (sigma/radius <= 0) that contributes a constant factor instead.
+    // An inactive scale (sigma/radius <= 0) contributes a constant factor.
     virtual bool scaleActive(size_t s) const { return sigma[s] > 0; }
 
-    // Builds the illumination-estimate node for scale s of a given channel's intensity
-    // node. Only called when scaleActive(s) is true.
+    // Only called for active scales.
     virtual VSNode *buildScaleNode(VSNode *channelNode, size_t s, VSCore *core, const VSAPI *vsapi, std::string &errMsg) const
     {
         return BuildGaussianBlurNode(channelNode, sigma[s], device[s], device_id[s], num_streams[s], tune[s], core, vsapi, errMsg);
     }
 
-    // Builds the intensity-extraction and per-scale illumination-estimate node graph. Must
-    // be called after arguments_process() succeeds and before the filter node itself is
-    // created. Returns false (and sets an error on out) on failure, e.g. a required backend
-    // plugin is missing.
+    // Builds the intensity and illumination nodes, after arguments_process() and before creating
+    // the filter. Returns false and sets an error on out on failure.
     bool buildGraph(VSCore *core, VSMap *out)
     {
+        // No active scale: process() only copies planes, so build (and fetch) nothing
+        if (!process[0] && !process[1] && !process[2])
+            return true;
+
         std::vector<std::pair<IntensityMode, int>> channels;
         getChannels(channels);
         channelCount = static_cast<int>(channels.size());
@@ -322,8 +315,7 @@ public:
         return true;
     }
 
-    // Requests (arInitial) or must be paired with a matching getFrameFilter (arAllFramesReady)
-    // for every auxiliary node this instance built, in addition to the main input node.
+    // Requests frame n of the input and every node buildGraph() built.
     void requestFrames(int n, VSFrameContext *frameCtx) const
     {
         vsapi->requestFrameFilter(n, node, frameCtx);
@@ -335,8 +327,7 @@ public:
         }
     }
 
-    // Fills dependencies with every node this instance built (main input, intensity nodes,
-    // blurred nodes), for use with createVideoFilter.
+    // The input and every node buildGraph() built, for createVideoFilter.
     void fillDependencies(std::vector<VSFilterDependency> &dependencies) const
     {
         dependencies.push_back({ node, rpStrictSpatial });
@@ -360,8 +351,7 @@ private:
     const MSRData &d;
 
 protected:
-    // Fetched once per GetFrame call, in the constructor, for every node d built; freed in
-    // the destructor. Indexed the same way as d.intensityNode / d.blurNode.
+    // Frames of d.intensityNode / d.blurNode, same indexing.
     const VSFrame *intensityFrame[VSMaxPlaneCount] = { nullptr, nullptr, nullptr };
     std::vector<const VSFrame *> blurFrame[VSMaxPlaneCount];
 
@@ -395,12 +385,10 @@ public:
         }
     }
 
-    // Copies the pre-computed [0,1] intensity channel for the given channel (as built by the
-    // Intensity node) into idata, using this process's own buffer stride.
+    // Copies the [0,1] intensity channel into idata (stride == this->stride).
     void CopyIntensity(FLType *idata, int channel) const;
 
-    // Multi Scale Retinex process kernel for floating point data: combines the pre-blurred
-    // per-scale frames for the given channel with idata into odata (log-average form).
+    // Multi Scale Retinex process kernel for floating point data
     int MSRKernel(FLType *odata, const FLType *idata, int channel) const;
 
     // Simplest color balance with pixel clipping on either side of the dynamic range

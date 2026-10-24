@@ -42,62 +42,53 @@ void MSRProcess::CopyIntensity(FLType *idata, int channel) const
 
 int MSRProcess::MSRKernel(FLType *odata, const FLType *idata, int channel) const
 {
-    int i, j, upper;
+    const size_t scount = d.scaleCount();
 
-    FLType *gauss = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-
-    for (j = 0; j < height; j++)
+    // Active scales' blurred frames, in blurFrame[channel]'s order; inactive scales multiply by 2
+    std::vector<const float *> illump;
+    std::vector<int> illumStride;
+    std::vector<bool> active(scount);
+    size_t blurIdx = 0;
+    for (size_t s = 0; s < scount; s++)
     {
-        i = stride * j;
-        for (upper = i + width; i < upper; i++)
-            odata[i] = 1;
+        active[s] = d.scaleActive(s);
+        if (!active[s]) continue;
+        const VSFrame *bf = blurFrame[channel][blurIdx++];
+        illump.push_back(reinterpret_cast<const float *>(vsapi->getReadPtr(bf, 0)));
+        illumStride.push_back(static_cast<int>(vsapi->getStride(bf, 0) / sizeof(float)));
     }
 
-    size_t s, scount = d.scaleCount();
-    size_t blurIdx = 0; // advances only for active scales, matching blurFrame[channel]'s order
-
-    for (s = 0; s < scount; s++)
+    // Row-fused: product over scales, then log, in one pass per row (same operation order per pixel)
+    for (int j = 0; j < height; j++)
     {
-        if (d.scaleActive(s))
-        {
-            const VSFrame *bf = blurFrame[channel][blurIdx++];
-            const int gaussStride = static_cast<int>(vsapi->getStride(bf, 0) / sizeof(float));
-            const float *gaussp = reinterpret_cast<const float *>(vsapi->getReadPtr(bf, 0));
+        FLType *orow = odata + j * stride;
+        const FLType *irow = idata + j * stride;
 
-            for (j = 0; j < height; j++)
+        for (int x = 0; x < width; x++)
+            orow[x] = 1;
+
+        for (size_t s = 0, g = 0; s < scount; s++)
+        {
+            if (active[s])
             {
-                const float *grow = gaussp + j * gaussStride;
-                FLType *drow = gauss + j * stride;
+                const float *lrow = illump[g] + j * illumStride[g];
+                g++;
                 for (int x = 0; x < width; x++)
-                    drow[x] = static_cast<FLType>(grow[x]);
+                {
+                    const FLType lv = static_cast<FLType>(lrow[x]);
+                    orow[x] *= lv <= 0 ? 1 : irow[x] / lv + 1;
+                }
             }
-
-            for (j = 0; j < height; j++)
+            else
             {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                    odata[i] *= gauss[i] <= 0 ? 1 : idata[i] / gauss[i] + 1;
+                for (int x = 0; x < width; x++)
+                    orow[x] *= FLType(2);
             }
         }
-        else
-        {
-            for (j = 0; j < height; j++)
-            {
-                i = stride * j;
-                for (upper = i + width; i < upper; i++)
-                    odata[i] *= FLType(2);
-            }
-        }
-    }
 
-    for (j = 0; j < height; j++)
-    {
-        i = stride * j;
-        for (upper = i + width; i < upper; i++)
-            odata[i] = log(odata[i]) / static_cast<FLType>(scount);
+        for (int x = 0; x < width; x++)
+            orow[x] = log(orow[x]) / static_cast<FLType>(scount);
     }
-
-    vsh::vsh_aligned_free(gauss);
 
     return 0;
 }

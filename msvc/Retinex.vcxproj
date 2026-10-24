@@ -139,14 +139,31 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="..\include\Gaussian.h" />
+    <ClInclude Include="..\include\AssBlur.h" />
+    <ClInclude Include="..\include\BoxBlur.h" />
+    <ClInclude Include="..\include\BoxFilter.h" />
+    <ClInclude Include="..\include\Device.h" />
+    <ClInclude Include="..\include\GaussBlur.h" />
+    <ClInclude Include="..\include\GuidedFilter.h" />
+    <ClInclude Include="..\include\GuidedRCP.h" />
+    <ClInclude Include="..\include\Helper.h" />
+    <ClInclude Include="..\include\IirBlur.h" />
+    <ClInclude Include="..\include\Intensity.h" />
     <ClInclude Include="..\include\MSR.h" />
     <ClInclude Include="..\include\MSRCP.h" />
-    <ClInclude Include="..\include\Helper.h" />
     <ClInclude Include="..\include\MSRCR.h" />
+    <ClInclude Include="..\include\PlaneFilter.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\source\Gaussian.cpp" />
+    <ClCompile Include="..\source\AssBlur.cpp" />
+    <ClCompile Include="..\source\BoxBlur.cpp" />
+    <ClCompile Include="..\source\BoxFilter.cpp" />
+    <ClCompile Include="..\source\Device.cpp" />
+    <ClCompile Include="..\source\GaussBlur.cpp" />
+    <ClCompile Include="..\source\GuidedFilter.cpp" />
+    <ClCompile Include="..\source\GuidedRCP.cpp" />
+    <ClCompile Include="..\source\IirBlur.cpp" />
+    <ClCompile Include="..\source\Intensity.cpp" />
     <ClCompile Include="..\source\MSR.cpp" />
     <ClCompile Include="..\source\MSRCP.cpp" />
     <ClCompile Include="..\source\MSRCR.cpp" />

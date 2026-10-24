@@ -55,7 +55,7 @@ public:
 
     ~MSRCRData() {}
 
-    virtual int arguments_process(const VSMap *in, VSMap *out)
+    virtual int arguments_process(const VSMap *in, VSMap *out) override
     {
         if (MSRData::arguments_process(in, out))
             return 1;
@@ -99,8 +99,8 @@ private:
     void process_core();
 
 protected:
-    virtual void process_core8() { process_core<uint8_t>(); }
-    virtual void process_core16() { process_core<uint16_t>(); }
+    virtual void process_core8() override { process_core<uint8_t>(); }
+    virtual void process_core16() override { process_core<uint16_t>(); }
 
 public:
     MSRCRProcess(const MSRCRData &_d, int n, VSFrameContext *frameCtx, VSCore *core, const VSAPI *_vsapi)
@@ -126,10 +126,10 @@ void MSRCRProcess::process_core()
     T dCeil = d.fulld ? (1 << bps) - 1 : 235 << (bps - 8);
 
     // Allocate floating point data buff
-    FLType *idata = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-    FLType *odataR = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-    FLType *odataG = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-    FLType *odataB = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *idata = Scratch<FLType>(ScratchFrame, size_t(4) * pcount);
+    FLType *odataR = idata + pcount;
+    FLType *odataG = odataR + pcount;
+    FLType *odataB = odataG + pcount;
 
     // Get read and write pointer for src and dst
     const T *Rsrcp, *Gsrcp, *Bsrcp;
@@ -165,8 +165,7 @@ void MSRCRProcess::process_core()
         }
     }
 
-    // R/G/B intensity channels (already derived, normalized to [0,1], and blurred per scale
-    // by the Intensity/blur nodes built at filter creation)
+    // R/G/B channels in [0,1], from the Intensity nodes
 
     // Apply MSR to floating point R channel
     CopyIntensity(idata, 0);
@@ -204,12 +203,6 @@ void MSRCRProcess::process_core()
     SimplestColorBalance(Rdstp, odataR, Rsrcp, dFloor, dCeil);
     SimplestColorBalance(Gdstp, odataG, Gsrcp, dFloor, dCeil);
     SimplestColorBalance(Bdstp, odataB, Bsrcp, dFloor, dCeil);
-
-    // Free floating point data buff
-    vsh::vsh_aligned_free(idata);
-    vsh::vsh_aligned_free(odataR);
-    vsh::vsh_aligned_free(odataG);
-    vsh::vsh_aligned_free(odataB);
 }
 
 

@@ -1,6 +1,7 @@
 /*
 * Retinex filter - VapourSynth plugin
 * Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -18,6 +19,7 @@
 
 
 #include "IirBlur.h"
+#include "PlaneFilter.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -26,13 +28,12 @@
 namespace
 {
 
-// I.T. Young, L.J. van Vliet, "Recursive implementation of the Gaussian filter", 1995:
-// a single application of this 4th-order recursive filter (run forward+backward per
-// dimension) closely approximates a true Gaussian, at O(1) cost per pixel regardless
-// of sigma.
+// I.T. Young, L.J. van Vliet, "Recursive implementation of the Gaussian filter", 1995
 void Recursive_Gaussian_Parameters(const double sigma, FLType &B, FLType &B1, FLType &B2, FLType &B3)
 {
-    const double q = sigma < 2.5 ? 3.97156 - 4.14554 * sqrt(1 - 0.26891 * sigma) : 0.98711 * sigma - 0.96330;
+    double q = sigma < 2.5 ? 3.97156 - 4.14554 * sqrt(1 - 0.26891 * sigma) : 0.98711 * sigma - 0.96330;
+    // q < 0 below sigma ~0.305 gives negative lobes; q == 0 is the identity
+    if (!(q > 0)) q = 0;
 
     const double b0 = 1.57825 + 2.44413 * q + 1.4281 * q * q + 0.422205 * q * q * q;
     const double b1 = 2.44413 * q + 2.85619 * q * q + 1.26661 * q * q * q;
@@ -45,14 +46,47 @@ void Recursive_Gaussian_Parameters(const double sigma, FLType &B, FLType &B1, FL
     B3 = static_cast<FLType>(b3 / b0);
 }
 
-void Recursive_Gaussian2D_Vertical(FLType *output, const FLType *input, int height, int width, int stride,
-    const FLType B, const FLType B1, const FLType B2, const FLType B3)
+// Backward pass initialisation for replicate edges (B. Triggs, M. Sdika, "Boundary conditions for
+// Young-van Vliet recursive filtering", IEEE TSP 2006): with u the last input and e[j] = y[N-1-j] - u,
+//     v[N+k] = u + sum_j M[k][j] * e[j],   k = 0, 1, 2.
+// M is computed numerically by running the homogeneous recursions past the edge until they decay.
+void Recursive_Gaussian_Boundary(FLType B, FLType B1, FLType B2, FLType B3, double M[3][3])
+{
+    std::vector<double> e, dv;
+
+    for (int j = 0; j < 3; j++)
+    {
+        // forward pass beyond the edge (input == u, so deviation is homogeneous)
+        e.assign(3, 0.0);
+        e[2 - j] = 1; // e holds y[N-3], y[N-2], y[N-1] in order
+        for (size_t n = 3; n < 1000000; n++)
+        {
+            const double v = B1 * e[n - 1] + B2 * e[n - 2] + B3 * e[n - 3];
+            e.push_back(v);
+            if (n > 16 && std::abs(v) < 1e-13 && std::abs(e[n - 1]) < 1e-13 && std::abs(e[n - 2]) < 1e-13)
+                break;
+        }
+
+        // backward pass from far beyond the edge (deviation 0) back to index N
+        const size_t K = e.size(); // e[3] corresponds to index N
+        dv.assign(K + 3, 0.0);
+        for (size_t n = K; n-- > 3;)
+            dv[n] = B * e[n] + B1 * dv[n + 1] + B2 * dv[n + 2] + B3 * dv[n + 3];
+
+        for (int k = 0; k < 3; k++)
+            M[k][j] = 3 + k < K ? dv[3 + k] : 0;
+    }
+}
+
+// In place
+void Recursive_Gaussian2D_Vertical(FLType *data, int stride, int width, int height,
+    const FLType B, const FLType B1, const FLType B2, const FLType B3, const double M[3][3])
 {
     int i0, i1, i2, i3, j, lower, upper;
     FLType P0, P1, P2, P3;
 
-    if (output != input)
-        memcpy(output, input, sizeof(FLType) * width);
+    // last input row (the replicated edge value), overwritten by the forward pass
+    std::vector<FLType> last(data + stride * (height - 1), data + stride * (height - 1) + width);
 
     for (j = 0; j < height; j++)
     {
@@ -66,163 +100,134 @@ void Recursive_Gaussian2D_Vertical(FLType *output, const FLType *input, int heig
 
         for (; i0 < upper; i0++, i1++, i2++, i3++)
         {
-            P3 = output[i3];
-            P2 = output[i2];
-            P1 = output[i1];
-            P0 = input[i0];
-            output[i0] = B * P0 + B1 * P1 + B2 * P2 + B3 * P3;
+            P3 = data[i3];
+            P2 = data[i2];
+            P1 = data[i1];
+            P0 = data[i0];
+            data[i0] = B * P0 + B1 * P1 + B2 * P2 + B3 * P3;
+        }
+    }
+
+    // backward state for rows height, height+1, height+2
+    std::vector<FLType> tail(3 * width);
+    {
+        const FLType *e0 = data + stride * (height - 1);
+        const FLType *e1 = data + stride * Max(height - 2, 0);
+        const FLType *e2 = data + stride * Max(height - 3, 0);
+        for (int x = 0; x < width; x++)
+        {
+            const double u = last[x];
+            const double d0 = e0[x] - u, d1 = e1[x] - u, d2 = e2[x] - u;
+            for (int k = 0; k < 3; k++)
+                tail[k * width + x] = static_cast<FLType>(u + M[k][0] * d0 + M[k][1] * d1 + M[k][2] * d2);
         }
     }
 
     for (j = height - 1; j >= 0; j--)
     {
-        lower = stride * j;
-        upper = lower + width;
+        FLType *row0 = data + stride * j;
+        const FLType *row1 = j + 1 < height ? data + stride * (j + 1) : tail.data() + width * (j + 1 - height);
+        const FLType *row2 = j + 2 < height ? data + stride * (j + 2) : tail.data() + width * (j + 2 - height);
+        const FLType *row3 = j + 3 < height ? data + stride * (j + 3) : tail.data() + width * (j + 3 - height);
 
-        i0 = lower;
-        i1 = j >= height - 1 ? i0 : i0 + stride;
-        i2 = j >= height - 2 ? i1 : i1 + stride;
-        i3 = j >= height - 3 ? i2 : i2 + stride;
+        for (int x = 0; x < width; x++)
+            row0[x] = B * row0[x] + B1 * row1[x] + B2 * row2[x] + B3 * row3[x];
+    }
+}
 
-        for (; i0 < upper; i0++, i1++, i2++, i3++)
+// G rows interleaved so their serial recursions overlap
+template < int G, typename T >
+void Recursive_Gaussian_Rows(const T *input, int inStride, FLType *output, int outStride, int width,
+    const FLType B, const FLType B1, const FLType B2, const FLType B3, const double M[3][3])
+{
+    FLType P0, P1[G], P2[G], P3[G];
+
+    for (int k = 0; k < G; k++)
+        P3[k] = P2[k] = P1[k] = input[k * inStride];
+
+    for (int i = 0; i < width; i++)
+    {
+        for (int k = 0; k < G; k++)
         {
-            P3 = output[i3];
-            P2 = output[i2];
-            P1 = output[i1];
-            P0 = output[i0];
-            output[i0] = B * P0 + B1 * P1 + B2 * P2 + B3 * P3;
+            P0 = B * input[k * inStride + i] + B1 * P1[k] + B2 * P2[k] + B3 * P3[k];
+            P3[k] = P2[k];
+            P2[k] = P1[k];
+            P1[k] = P0;
+            output[k * outStride + i] = P0;
+        }
+    }
+
+    // P1, P2, P3 now hold the last 3 forward outputs
+    for (int k = 0; k < G; k++)
+    {
+        const double u = input[k * inStride + width - 1];
+        const double d0 = P1[k] - u, d1 = P2[k] - u, d2 = P3[k] - u;
+        P1[k] = static_cast<FLType>(u + M[0][0] * d0 + M[0][1] * d1 + M[0][2] * d2);
+        P2[k] = static_cast<FLType>(u + M[1][0] * d0 + M[1][1] * d1 + M[1][2] * d2);
+        P3[k] = static_cast<FLType>(u + M[2][0] * d0 + M[2][1] * d1 + M[2][2] * d2);
+    }
+
+    for (int i = width - 1; i >= 0; i--)
+    {
+        for (int k = 0; k < G; k++)
+        {
+            FLType &out = output[k * outStride + i];
+            P0 = B * out + B1 * P1[k] + B2 * P2[k] + B3 * P3[k];
+            P3[k] = P2[k];
+            P2[k] = P1[k];
+            P1[k] = P0;
+            out = P0;
         }
     }
 }
 
-void Recursive_Gaussian2D_Horizontal(FLType *output, const FLType *input, int height, int width, int stride,
-    const FLType B, const FLType B1, const FLType B2, const FLType B3)
+template < typename T >
+void Recursive_Gaussian2D_Horizontal(const T *input, int inStride, FLType *output, int outStride, int width, int height,
+    const FLType B, const FLType B1, const FLType B2, const FLType B3, const double M[3][3])
 {
-    int i, j, lower, upper;
-    FLType P0, P1, P2, P3;
-
-    for (j = 0; j < height; j++)
-    {
-        lower = stride * j;
-        upper = lower + width;
-
-        i = lower;
-        output[i] = P3 = P2 = P1 = input[i];
-
-        for (i++; i < upper; i++)
-        {
-            P0 = B * input[i] + B1 * P1 + B2 * P2 + B3 * P3;
-            P3 = P2;
-            P2 = P1;
-            P1 = P0;
-            output[i] = P0;
-        }
-
-        i--;
-        P3 = P2 = P1 = output[i];
-
-        for (i--; i >= lower; i--)
-        {
-            P0 = B * output[i] + B1 * P1 + B2 * P2 + B3 * P3;
-            P3 = P2;
-            P2 = P1;
-            P1 = P0;
-            output[i] = P0;
-        }
-    }
+    const int G = 8;
+    int j = 0;
+    for (; j + G <= height; j += G)
+        Recursive_Gaussian_Rows<G>(input + j * inStride, inStride, output + j * outStride, outStride, width, B, B1, B2, B3, M);
+    for (; j < height; j++)
+        Recursive_Gaussian_Rows<1>(input + j * inStride, inStride, output + j * outStride, outStride, width, B, B1, B2, B3, M);
 }
 
 
-struct IirBlurData
+struct IirBlurKernel
 {
-    VSNode *node = nullptr;
-    VSVideoInfo vi{};
-    FLType B = 0, B1 = 0, B2 = 0, B3 = 0;
-};
+    FLType B, B1, B2, B3;
+    double M[3][3];
 
-const VSFrame *VS_CC IirBlurGetFrame(int n, int activationReason, void *instanceData, void **frameData,
-    VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
-{
-    const IirBlurData *d = reinterpret_cast<const IirBlurData *>(instanceData);
-
-    if (activationReason == arInitial)
+    void operator()(const float *srcp, int srcStride, float *dstp, int dstStride, int width, int height) const
     {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
-    }
-    else if (activationReason == arAllFramesReady)
-    {
-        const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
+        // packed (stride == width) buffer for the in-place vertical pass
+        FLType *buf = Scratch<FLType>(ScratchFrame, size_t(width) * height);
 
-        const int width = vsapi->getFrameWidth(src, 0);
-        const int height = vsapi->getFrameHeight(src, 0);
-        const int srcStride = static_cast<int>(vsapi->getStride(src, 0) / sizeof(float));
-        const float *srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, 0));
-
-        VSFrame *dst = vsapi->newVideoFrame(&d->vi.format, width, height, src, core);
-        const int dstStride = static_cast<int>(vsapi->getStride(dst, 0) / sizeof(float));
-        float *dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, 0));
-
-        // The recursive filter needs a single consistent stride for its input/output
-        // buffer, so work in a tightly packed (stride == width) FLType buffer.
-        FLType *buf1 = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType) * width * height, Alignment);
-        FLType *buf2 = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType) * width * height, Alignment);
+        Recursive_Gaussian2D_Horizontal(srcp, srcStride, buf, width, width, height, B, B1, B2, B3, M);
+        const int strip = 128;
+        for (int x = 0; x < width; x += strip)
+            Recursive_Gaussian2D_Vertical(buf + x, width, Min(strip, width - x), height, B, B1, B2, B3, M);
 
         for (int y = 0; y < height; y++)
         {
-            const float *srow = srcp + y * srcStride;
-            FLType *drow = buf1 + y * width;
-            for (int x = 0; x < width; x++)
-                drow[x] = static_cast<FLType>(srow[x]);
-        }
-
-        Recursive_Gaussian2D_Horizontal(buf2, buf1, height, width, width, d->B, d->B1, d->B2, d->B3);
-        Recursive_Gaussian2D_Vertical(buf2, buf2, height, width, width, d->B, d->B1, d->B2, d->B3);
-
-        for (int y = 0; y < height; y++)
-        {
-            const FLType *srow = buf2 + y * width;
+            const FLType *srow = buf + y * width;
             float *drow = dstp + y * dstStride;
             for (int x = 0; x < width; x++)
                 drow[x] = static_cast<float>(srow[x]);
         }
-
-        vsh::vsh_aligned_free(buf1);
-        vsh::vsh_aligned_free(buf2);
-        vsapi->freeFrame(src);
-        return dst;
     }
-
-    return nullptr;
-}
-
-void VS_CC IirBlurFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
-{
-    IirBlurData *d = reinterpret_cast<IirBlurData *>(instanceData);
-    vsapi->freeNode(d->node);
-    delete d;
-}
+};
 
 } // namespace
 
 
 VSNode *CreateIirBlurNode(VSNode *src, double sigma, VSCore *core, const VSAPI *vsapi)
 {
-    IirBlurData *d = new IirBlurData();
-    d->node = vsapi->addNodeRef(src);
-    d->vi = *vsapi->getVideoInfo(src);
-    Recursive_Gaussian_Parameters(sigma, d->B, d->B1, d->B2, d->B3);
-
-    VSFilterDependency dep = { src, rpStrictSpatial };
-    VSNode *node = vsapi->createVideoFilter2("RetinexIirBlur", &d->vi, IirBlurGetFrame, IirBlurFree,
-        fmParallel, &dep, 1, d, core);
-
-    if (!node)
-    {
-        vsapi->freeNode(d->node);
-        delete d;
-    }
-
-    return node;
+    IirBlurKernel k;
+    Recursive_Gaussian_Parameters(sigma, k.B, k.B1, k.B2, k.B3);
+    Recursive_Gaussian_Boundary(k.B, k.B1, k.B2, k.B3, k.M);
+    return CreatePlaneFilterNode("RetinexIirBlur", src, k, core, vsapi);
 }
 
 

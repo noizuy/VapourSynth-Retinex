@@ -1,6 +1,7 @@
 /*
 * Retinex filter - VapourSynth plugin
 * Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -27,10 +28,8 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-// Builds a node approximating a Gaussian blur (sigma in pixels) of a single-plane GrayS
-// node via a single application of the Young/van Vliet 4th-order recursive (IIR) Gaussian
-// filter, applied horizontally then vertically. Cost per pixel is O(1) regardless of sigma.
-// The returned node is a new reference the caller must free.
+// Gaussian blur (sigma in pixels) of a GrayS node by the Young/van Vliet recursive filter,
+// O(1) per pixel. Returns a new node reference.
 VSNode *CreateIirBlurNode(VSNode *src, double sigma, VSCore *core, const VSAPI *vsapi);
 
 

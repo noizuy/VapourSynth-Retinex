@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 
 #include "BoxBlur.h"
 #include "BoxFilter.h"
+#include "PlaneFilter.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -27,9 +28,8 @@
 namespace
 {
 
-// P. Kovesi, "Fast Almost-Gaussian Filtering", DICTA 2010: pick 3 box widths whose combined
-// variance matches a Gaussian of the given sigma. Using two slightly different odd widths
-// (rather than the same width 3 times) gets much closer to a true Gaussian.
+// P. Kovesi, "Fast Almost-Gaussian Filtering", DICTA 2010: 3 box widths (two adjacent odd sizes)
+// whose combined variance matches the Gaussian.
 void BoxRadiiForSigma(double sigma, int radii[3])
 {
     const int n = 3;
@@ -53,82 +53,46 @@ void BoxRadiiForSigma(double sigma, int radii[3])
 }
 
 
-struct BoxBlurData
+struct BoxBlurKernel
 {
-    VSNode *node = nullptr;
-    VSVideoInfo vi{};
-    int radii[3] = { 0, 0, 0 };
+    int radii[3];
+
+    void operator()(const float *srcp, int srcStride, float *dstp, int dstStride, int width, int height) const
+    {
+        // Boxes along different axes commute: 3 H passes per row, then 3 V passes per column strip
+        const int strip = 128;
+        const size_t frameSize = size_t(width) * height;
+        float *bufH = Scratch<float>(ScratchFrame, frameSize + 2 * width + size_t(2) * strip * height);
+        float *row1 = bufH + frameSize;
+        float *row2 = row1 + width;
+        float *col1 = row2 + width;
+        float *col2 = col1 + size_t(strip) * height;
+
+        for (int y = 0; y < height; y++)
+        {
+            BoxFilterHorizontal(srcp + y * srcStride, 0, row1, 0, width, 1, radii[0]);
+            BoxFilterHorizontal(row1, 0, row2, 0, width, 1, radii[1]);
+            BoxFilterHorizontal(row2, 0, bufH + y * width, 0, width, 1, radii[2]);
+        }
+
+        for (int x = 0; x < width; x += strip)
+        {
+            const int sw = Min(strip, width - x);
+            BoxFilterVertical(bufH + x, width, col1, sw, sw, height, radii[0]);
+            BoxFilterVertical(col1, sw, col2, sw, sw, height, radii[1]);
+            BoxFilterVertical(col2, sw, dstp + x, dstStride, sw, height, radii[2]);
+        }
+    }
 };
-
-const VSFrame *VS_CC BoxBlurGetFrame(int n, int activationReason, void *instanceData, void **frameData,
-    VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
-{
-    const BoxBlurData *d = reinterpret_cast<const BoxBlurData *>(instanceData);
-
-    if (activationReason == arInitial)
-    {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
-    }
-    else if (activationReason == arAllFramesReady)
-    {
-        const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-
-        const int width = vsapi->getFrameWidth(src, 0);
-        const int height = vsapi->getFrameHeight(src, 0);
-        const int srcStride = static_cast<int>(vsapi->getStride(src, 0) / sizeof(float));
-        const float *srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, 0));
-
-        VSFrame *dst = vsapi->newVideoFrame(&d->vi.format, width, height, src, core);
-        const int dstStride = static_cast<int>(vsapi->getStride(dst, 0) / sizeof(float));
-        float *dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, 0));
-
-        float *bufA = vsh::vsh_aligned_malloc<float>(sizeof(float) * width * height, Alignment);
-        float *bufB = vsh::vsh_aligned_malloc<float>(sizeof(float) * width * height, Alignment);
-
-        BoxFilterHorizontal(srcp, srcStride, bufA, width, width, height, d->radii[0]);
-        BoxFilterVertical(bufA, width, bufB, width, width, height, d->radii[0]);
-        BoxFilterHorizontal(bufB, width, bufA, width, width, height, d->radii[1]);
-        BoxFilterVertical(bufA, width, bufB, width, width, height, d->radii[1]);
-        BoxFilterHorizontal(bufB, width, bufA, width, width, height, d->radii[2]);
-        BoxFilterVertical(bufA, width, dstp, dstStride, width, height, d->radii[2]);
-
-        vsh::vsh_aligned_free(bufA);
-        vsh::vsh_aligned_free(bufB);
-        vsapi->freeFrame(src);
-        return dst;
-    }
-
-    return nullptr;
-}
-
-void VS_CC BoxBlurFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
-{
-    BoxBlurData *d = reinterpret_cast<BoxBlurData *>(instanceData);
-    vsapi->freeNode(d->node);
-    delete d;
-}
 
 } // namespace
 
 
 VSNode *CreateBoxBlurNode(VSNode *src, double sigma, VSCore *core, const VSAPI *vsapi)
 {
-    BoxBlurData *d = new BoxBlurData();
-    d->node = vsapi->addNodeRef(src);
-    d->vi = *vsapi->getVideoInfo(src);
-    BoxRadiiForSigma(sigma, d->radii);
-
-    VSFilterDependency dep = { src, rpStrictSpatial };
-    VSNode *node = vsapi->createVideoFilter2("RetinexBoxBlur", &d->vi, BoxBlurGetFrame, BoxBlurFree,
-        fmParallel, &dep, 1, d, core);
-
-    if (!node)
-    {
-        vsapi->freeNode(d->node);
-        delete d;
-    }
-
-    return node;
+    BoxBlurKernel k;
+    BoxRadiiForSigma(sigma, k.radii);
+    return CreatePlaneFilterNode("RetinexBoxBlur", src, k, core, vsapi);
 }
 
 

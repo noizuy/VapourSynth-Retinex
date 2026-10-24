@@ -1,6 +1,7 @@
 /*
 * Retinex filter - VapourSynth plugin
 * Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -43,8 +44,7 @@ void IntensityProcess(const IntensityData *d, const VSFrame *src, VSFrame *dst, 
     const int srcStride = static_cast<int>(vsapi->getStride(src, 0) / sizeof(T));
     const int dstStride = static_cast<int>(vsapi->getStride(dst, 0) / sizeof(float));
 
-    // Defaults correspond to a full-range source; a limited-range source overrides these
-    // below with the actual per-frame minimum/maximum, exactly as MSRCP/MSRCR did inline.
+    // full range; limited range uses the per-frame min/max below
     T sFloor = 0;
     T sCeil = static_cast<T>((1 << bps) - 1);
 

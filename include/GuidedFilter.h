@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -27,15 +27,9 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-// Builds a node applying the (self-guided, i.e. guide == input) Fast Guided Filter
-// (He & Sun, "Fast Guided Filter", arXiv:1505.00996) to a single-plane GrayS node: an
-// edge-aware smoothing filter used here as the illumination estimate in place of a
-// Gaussian/box/IIR blur. radius/eps are the guided filter's usual window radius and
-// regularization (in the same [0,1] units as the intensity channel); subsample is the
-// downsampling factor the "fast" variant runs its box-filter statistics at before
-// upsampling the resulting linear coefficients back to full resolution (1 disables the
-// speedup and runs at full resolution). The returned node is a new reference the caller
-// must free.
+// Self-guided Fast Guided Filter (He & Sun, arXiv:1505.00996) of a GrayS node, used as an edge-aware
+// illumination estimate. radius/eps are in full-resolution pixels / [0,1] intensity units; the box
+// statistics run at 1/subsample resolution (1 = full resolution). Returns a new node reference.
 VSNode *CreateGuidedFilterNode(VSNode *src, int radius, double eps, int subsample,
     VSCore *core, const VSAPI *vsapi);
 

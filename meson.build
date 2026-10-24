@@ -9,6 +9,7 @@ sources = [
   'source/BoxBlur.cpp',
   'source/BoxFilter.cpp',
   'source/Device.cpp',
+  'source/GaussBlur.cpp',
   'source/GuidedFilter.cpp',
   'source/GuidedRCP.cpp',
   'source/IirBlur.cpp',
@@ -28,7 +29,16 @@ if host_machine.cpu_family().startswith('x86')
   add_project_arguments('-mfpmath=sse', '-msse2', language : 'cpp')
 endif
 
+# Keep the module mapped after dlclose(): with a statically linked C++ runtime (e.g. zig c++),
+# runtime exit-time/thread-local destructors can run after VapourSynth unloads the
+# plugin and crash the process on exit.
+link_args = []
+if host_machine.system() not in ['windows', 'darwin']
+  link_args += ['-Wl,-z,nodelete']
+endif
+
 shared_module('retinex', sources,
+  link_args : link_args,
   include_directories : include_directories('include'),
   install : true,
   install_dir : py.get_install_dir() / 'vapoursynth' / 'plugins',

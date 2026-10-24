@@ -52,17 +52,9 @@ private:
             channels = { { IntensityMode::Y, 0 } };
     }
 
-public:
-    MSRCPData(const VSAPI *_vsapi = nullptr, std::string _FunctionName = "MSRCP")
-        : MSRData(_vsapi, _FunctionName) {}
-
-    ~MSRCPData() {}
-
-    virtual int arguments_process(const VSMap *in, VSMap *out)
+protected:
+    int parseChromaProtect(const VSMap *in, VSMap *out)
     {
-        if (MSRData::arguments_process(in, out))
-            return 1;
-
         int error;
 
         chroma_protect = vsapi->mapGetFloat(in, "chroma_protect", 0, &error);
@@ -76,13 +68,25 @@ public:
 
         return 0;
     }
+
+public:
+    MSRCPData(const VSAPI *_vsapi = nullptr, std::string _FunctionName = "MSRCP")
+        : MSRData(_vsapi, _FunctionName) {}
+
+    ~MSRCPData() {}
+
+    virtual int arguments_process(const VSMap *in, VSMap *out) override
+    {
+        if (MSRData::arguments_process(in, out))
+            return 1;
+        return parseChromaProtect(in, out);
+    }
 };
 
 
 void VS_CC MSRCPCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi);
 
-// Declared here (rather than kept file-local to MSRCP.cpp) so other MSRCPData subclasses
-// with their own Create function - e.g. GuidedRCPData/GuidedRCPCreate - can reuse them.
+// Shared with GuidedRCPCreate.
 const VSFrame *VS_CC MSRCPGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi);
 void VS_CC MSRCPFree(void *instanceData, VSCore *core, const VSAPI *vsapi);
 
@@ -101,8 +105,8 @@ private:
     void process_core();
 
 protected:
-    virtual void process_core8() { process_core<uint8_t>(); }
-    virtual void process_core16() { process_core<uint16_t>(); }
+    virtual void process_core8() override { process_core<uint8_t>(); }
+    virtual void process_core16() override { process_core<uint16_t>(); }
 
 public:
     MSRCPProcess(const MSRCPData &_d, int n, VSFrameContext *frameCtx, VSCore *core, const VSAPI *_vsapi)
@@ -154,16 +158,15 @@ void MSRCPProcess::process_core()
     FLType dRangeCFL = static_cast<FLType>(dRangeC);
 
     // Allocate floating point data buff
-    FLType *idata = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
-    FLType *odata = vsh::vsh_aligned_malloc<FLType>(sizeof(FLType)*pcount, Alignment);
+    FLType *idata = Scratch<FLType>(ScratchFrame, size_t(2) * pcount);
+    FLType *odata = idata + pcount;
 
     if (fi->colorFamily == cfGray) // Procedure for Gray color family
     {
         // Get write pointer for dst
         Ydstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, 0));
 
-        // Intensity channel (already derived, normalized to [0,1], and blurred per scale by
-        // the Intensity/blur nodes built at filter creation)
+        // Intensity channel in [0,1], from the Intensity node
         CopyIntensity(idata, 0);
 
         // Apply MSR to floating point intensity channel
@@ -193,9 +196,7 @@ void MSRCPProcess::process_core()
         Bsrcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, 2));
         Bdstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, 2));
 
-        // sFloor/sCeil are still needed below to reconstruct the RGB output, so the
-        // limited-range detection stays here even though idata itself now comes from the
-        // Intensity node (which performs the same detection internally).
+        // sFloor/sCeil are needed to reconstruct RGB (the Intensity node detects them separately)
         if (!d.fulls)
         {
             // If src is of limited range, determine the Floor and Ceil by the minimum and maximum value in the frame
@@ -220,8 +221,7 @@ void MSRCPProcess::process_core()
             }
         }
 
-        // Intensity channel (already derived, normalized to [0,1], and blurred per scale by
-        // the Intensity/blur nodes built at filter creation)
+        // Intensity channel in [0,1], from the Intensity node
         CopyIntensity(idata, 0);
 
         // Apply MSR to floating point intensity channel
@@ -284,8 +284,7 @@ void MSRCPProcess::process_core()
         Vsrcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, 2));
         Vdstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, 2));
 
-        // Intensity channel (already derived, normalized to [0,1], and blurred per scale by
-        // the Intensity/blur nodes built at filter creation)
+        // Intensity channel in [0,1], from the Intensity node
         CopyIntensity(idata, 0);
 
         // Apply MSR to floating point intensity channel
@@ -329,9 +328,6 @@ void MSRCPProcess::process_core()
         }
     }
 
-    // Free floating point data buff
-    vsh::vsh_aligned_free(idata);
-    vsh::vsh_aligned_free(odata);
 }
 
 

@@ -1,6 +1,6 @@
 /*
 * Retinex filter - VapourSynth plugin
-* Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 
 #include "GuidedFilter.h"
 #include "BoxFilter.h"
+#include "PlaneFilter.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -27,17 +28,14 @@
 namespace
 {
 
-// Applies a 2D box filter (horizontal then vertical) to a tightly packed (stride == w)
-// buffer. dst may alias src.
+// 2D box filter of a packed (stride == w) buffer; dst may alias src (scratch holds the H pass).
 void BoxFilter2D(const float *src, float *dst, int w, int h, int radius, float *scratch)
 {
     BoxFilterHorizontal(src, w, scratch, w, w, h, radius);
     BoxFilterVertical(scratch, w, dst, w, w, h, radius);
 }
 
-// Block-average downsample by an integer factor (the last row/column of blocks may be
-// smaller than factor x factor if width/height aren't a multiple of it). factor == 1
-// degenerates to an exact copy.
+// Block-average downsample by factor (edge blocks may be partial); factor == 1 is an exact copy.
 void BoxDownsample(const float *src, int srcStride, int width, int height,
     float *dst, int dw, int dh, int factor)
 {
@@ -64,147 +62,92 @@ void BoxDownsample(const float *src, int srcStride, int width, int height,
     }
 }
 
-// Upsamples a dw x dh (tightly packed) grid to width x height via bilinear interpolation,
-// aligning sample centers with the factor x factor blocks BoxDownsample averaged. factor
-// == 1 degenerates to an exact copy.
-void BilinearUpsample(const float *src, int dw, int dh, float *dst, int dstStride,
-    int width, int height, int factor)
+// Bilinear sample positions aligned with the factor x factor blocks BoxDownsample averaged: output i
+// lies between low-res samples i0[i] and i1[i] (clamped) with weight w[i] on i1. factor == 1 is exact.
+void BilinearTaps(int n, int dn, int factor, int *i0, int *i1, float *w)
 {
-    for (int y = 0; y < height; y++)
+    for (int i = 0; i < n; i++)
     {
-        const float fy = (y + 0.5f) / factor - 0.5f;
-        const int y0 = static_cast<int>(std::floor(fy));
-        const float wy = fy - y0;
-        const int y0c = Clip(y0, 0, dh - 1);
-        const int y1c = Clip(y0 + 1, 0, dh - 1);
-
-        float *drow = dst + y * dstStride;
-
-        for (int x = 0; x < width; x++)
-        {
-            const float fx = (x + 0.5f) / factor - 0.5f;
-            const int x0 = static_cast<int>(std::floor(fx));
-            const float wx = fx - x0;
-            const int x0c = Clip(x0, 0, dw - 1);
-            const int x1c = Clip(x0 + 1, 0, dw - 1);
-
-            const float v00 = src[y0c * dw + x0c];
-            const float v01 = src[y0c * dw + x1c];
-            const float v10 = src[y1c * dw + x0c];
-            const float v11 = src[y1c * dw + x1c];
-
-            const float v0 = v00 + (v01 - v00) * wx;
-            const float v1 = v10 + (v11 - v10) * wx;
-            drow[x] = v0 + (v1 - v0) * wy;
-        }
+        const float f = (i + 0.5f) / factor - 0.5f;
+        const int k = static_cast<int>(std::floor(f));
+        w[i] = f - k;
+        i0[i] = Clip(k, 0, dn - 1);
+        i1[i] = Clip(k + 1, 0, dn - 1);
     }
 }
 
 
-struct GuidedFilterData
+struct GuidedFilterKernel
 {
-    VSNode *node = nullptr;
-    VSVideoInfo vi{};
-    int radius = 0;
-    float eps = 0;
-    int subsample = 1;
-};
+    int radius;
+    float eps;
+    int subsample;
 
-const VSFrame *VS_CC GuidedFilterGetFrame(int n, int activationReason, void *instanceData, void **frameData,
-    VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi)
-{
-    const GuidedFilterData *d = reinterpret_cast<const GuidedFilterData *>(instanceData);
-
-    if (activationReason == arInitial)
+    void operator()(const float *srcp, int srcStride, float *dstp, int dstStride, int width, int height) const
     {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
-    }
-    else if (activationReason == arAllFramesReady)
-    {
-        const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-
-        const int width = vsapi->getFrameWidth(src, 0);
-        const int height = vsapi->getFrameHeight(src, 0);
-        const int srcStride = static_cast<int>(vsapi->getStride(src, 0) / sizeof(float));
-        const float *srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(src, 0));
-
-        VSFrame *dst = vsapi->newVideoFrame(&d->vi.format, width, height, src, core);
-        const int dstStride = static_cast<int>(vsapi->getStride(dst, 0) / sizeof(float));
-        float *dstp = reinterpret_cast<float *>(vsapi->getWritePtr(dst, 0));
-
-        const int subsample = d->subsample;
         const int dw = (width + subsample - 1) / subsample;
         const int dh = (height + subsample - 1) / subsample;
-        const int rLow = Max(d->radius / subsample, 1);
-        const float eps = d->eps;
+        const int rLow = Max(radius / subsample, 1);
 
-        // Low-resolution working buffers (statistics computed here, per He & Sun's "Fast
-        // Guided Filter": box-filter cost is independent of radius, so the only speedup
-        // comes from shrinking the number of pixels processed).
-        float *lowI = vsh::vsh_aligned_malloc<float>(sizeof(float) * dw * dh, Alignment);
-        float *meanI = vsh::vsh_aligned_malloc<float>(sizeof(float) * dw * dh, Alignment);
-        float *sq = vsh::vsh_aligned_malloc<float>(sizeof(float) * dw * dh, Alignment);
-        float *a = vsh::vsh_aligned_malloc<float>(sizeof(float) * dw * dh, Alignment);
-        float *b = vsh::vsh_aligned_malloc<float>(sizeof(float) * dw * dh, Alignment);
-        float *scratchLow = vsh::vsh_aligned_malloc<float>(sizeof(float) * dw * dh, Alignment);
+        // low-resolution statistics (He & Sun, "Fast Guided Filter")
+        const size_t lowSize = size_t(dw) * dh;
+        float *lowI = Scratch<float>(ScratchFrame, lowSize * 5 + width + height
+            + (sizeof(int) * 2 * (width + height) + sizeof(float) - 1) / sizeof(float));
+        float *meanI = lowI + lowSize;
+        float *sq = meanI + lowSize;
+        float *a = sq + lowSize;
+        float *b = a + lowSize;
+        float *wx = b + lowSize;
+        float *wy = wx + width;
+        int *x0 = reinterpret_cast<int *>(wy + height);
+        int *x1 = x0 + width;
+        int *y0 = x1 + width;
+        int *y1 = y0 + height;
 
         BoxDownsample(srcp, srcStride, width, height, lowI, dw, dh, subsample);
 
-        BoxFilter2D(lowI, meanI, dw, dh, rLow, scratchLow); // mean_I
-
-        for (int i = 0; i < dw * dh; i++)
+        for (size_t i = 0; i < lowSize; i++)
             sq[i] = lowI[i] * lowI[i];
-        BoxFilter2D(sq, sq, dw, dh, rLow, scratchLow); // corr_I (in place)
+        BoxFilter2D(lowI, meanI, dw, dh, rLow, a); // mean_I (a as scratch)
+        BoxFilter2D(sq, sq, dw, dh, rLow, a); // corr_I (in place)
 
-        // Self-guided (I == p): cov_Ip == var_I and mean_p == mean_I, which simplifies
-        // a = cov_Ip/(var_I+eps) and b = mean_p - a*mean_I down to just var_I and mean_I.
-        for (int i = 0; i < dw * dh; i++)
+        // self-guided (I == p): a = var_I / (var_I + eps), b = mean_I * (1 - a)
+        for (size_t i = 0; i < lowSize; i++)
         {
-            const float varI = sq[i] - meanI[i] * meanI[i];
+            const float varI = Max(sq[i] - meanI[i] * meanI[i], 0.f); // clamp rounding below 0
             const float ai = varI / (varI + eps);
             a[i] = ai;
             b[i] = meanI[i] * (1.f - ai);
         }
 
-        BoxFilter2D(a, a, dw, dh, rLow, scratchLow); // mean_a (in place)
-        BoxFilter2D(b, b, dw, dh, rLow, scratchLow); // mean_b (in place)
+        BoxFilter2D(a, a, dw, dh, rLow, lowI); // mean_a (in place, lowI as scratch)
+        BoxFilter2D(b, b, dw, dh, rLow, lowI); // mean_b (in place)
 
-        float *meanAFull = vsh::vsh_aligned_malloc<float>(sizeof(float) * width * height, Alignment);
-        float *meanBFull = vsh::vsh_aligned_malloc<float>(sizeof(float) * width * height, Alignment);
-        BilinearUpsample(a, dw, dh, meanAFull, width, width, height, subsample);
-        BilinearUpsample(b, dw, dh, meanBFull, width, width, height, subsample);
+        // q = mean_a .* I + mean_b, with mean_a/mean_b bilinearly upsampled on the fly
+        BilinearTaps(width, dw, subsample, x0, x1, wx);
+        BilinearTaps(height, dh, subsample, y0, y1, wy);
 
         for (int y = 0; y < height; y++)
         {
+            const float *a0 = a + y0[y] * dw, *a1 = a + y1[y] * dw;
+            const float *b0 = b + y0[y] * dw, *b1 = b + y1[y] * dw;
+            const float fy = wy[y];
             const float *Irow = srcp + y * srcStride;
-            const float *aRow = meanAFull + y * width;
-            const float *bRow = meanBFull + y * width;
             float *orow = dstp + y * dstStride;
+
             for (int x = 0; x < width; x++)
-                orow[x] = aRow[x] * Irow[x] + bRow[x]; // q = mean_a .* I + mean_b
+            {
+                const int i0 = x0[x], i1 = x1[x];
+                const float fx = wx[x];
+                const float av0 = a0[i0] + (a0[i1] - a0[i0]) * fx;
+                const float av1 = a1[i0] + (a1[i1] - a1[i0]) * fx;
+                const float bv0 = b0[i0] + (b0[i1] - b0[i0]) * fx;
+                const float bv1 = b1[i0] + (b1[i1] - b1[i0]) * fx;
+                orow[x] = (av0 + (av1 - av0) * fy) * Irow[x] + (bv0 + (bv1 - bv0) * fy);
+            }
         }
-
-        vsh::vsh_aligned_free(meanAFull);
-        vsh::vsh_aligned_free(meanBFull);
-        vsh::vsh_aligned_free(lowI);
-        vsh::vsh_aligned_free(meanI);
-        vsh::vsh_aligned_free(sq);
-        vsh::vsh_aligned_free(a);
-        vsh::vsh_aligned_free(b);
-        vsh::vsh_aligned_free(scratchLow);
-        vsapi->freeFrame(src);
-        return dst;
     }
-
-    return nullptr;
-}
-
-void VS_CC GuidedFilterFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
-{
-    GuidedFilterData *d = reinterpret_cast<GuidedFilterData *>(instanceData);
-    vsapi->freeNode(d->node);
-    delete d;
-}
+};
 
 } // namespace
 
@@ -212,24 +155,8 @@ void VS_CC GuidedFilterFree(void *instanceData, VSCore *core, const VSAPI *vsapi
 VSNode *CreateGuidedFilterNode(VSNode *src, int radius, double eps, int subsample,
     VSCore *core, const VSAPI *vsapi)
 {
-    GuidedFilterData *d = new GuidedFilterData();
-    d->node = vsapi->addNodeRef(src);
-    d->vi = *vsapi->getVideoInfo(src);
-    d->radius = radius;
-    d->eps = static_cast<float>(eps);
-    d->subsample = subsample;
-
-    VSFilterDependency dep = { src, rpStrictSpatial };
-    VSNode *node = vsapi->createVideoFilter2("RetinexGuidedFilter", &d->vi, GuidedFilterGetFrame, GuidedFilterFree,
-        fmParallel, &dep, 1, d, core);
-
-    if (!node)
-    {
-        vsapi->freeNode(d->node);
-        delete d;
-    }
-
-    return node;
+    const GuidedFilterKernel k = { radius, static_cast<float>(eps), subsample };
+    return CreatePlaneFilterNode("RetinexGuidedFilter", src, k, core, vsapi);
 }
 
 

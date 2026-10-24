@@ -1,6 +1,7 @@
 /*
 * Retinex filter - VapourSynth plugin
 * Copyright (C) 2014  mawen1250
+* Copyright (C) 2026  noizuy
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -35,13 +36,9 @@ enum class IntensityMode
 };
 
 
-// Builds a node producing a single-plane GrayS clip (values in [0,1] for full-range input)
-// derived from src, matching the intensity-channel derivation historically inlined in
-// MSRCP/MSRCR: for limited-range (fulls == false) input, the floor/ceil are auto-detected
-// per frame from the actual min/max sample value(s), exactly as before.
-//
-// channel selects which plane (0=R,1=G,2=B) is written out when mode is RGBChannel; ignored
-// otherwise. Returns nullptr on failure (only possible if src's own format is unsupported).
+// GrayS intensity channel of src in [0,1]; limited-range (fulls == false) input is stretched by
+// the per-frame min/max. channel (0=R, 1=G, 2=B) is only used by RGBChannel. Returns a new node
+// reference, or nullptr on failure.
 VSNode *CreateIntensityNode(VSNode *src, bool fulls, IntensityMode mode, int channel,
     VSCore *core, const VSAPI *vsapi);
 
