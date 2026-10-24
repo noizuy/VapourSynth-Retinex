@@ -15,7 +15,7 @@ dependencies = ["vapoursynth>=60"]
 dynamic = ["version"]
 
 [dependency-groups]
-dev = ["hatchling", "packaging", "meson", "ninja"]
+dev = ["hatchling", "packaging", "meson", "ninja", "pytest", "numpy", "scipy"]
 
 [tool.hatch.version]
 path = "meson.build"
@@ -31,3 +31,6 @@ artifacts = [
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
