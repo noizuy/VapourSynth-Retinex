@@ -234,3 +234,6 @@ dist/
 /vapoursynth/
 *.egg-info/
 .venv/
+
+# Python bytecode
+__pycache__/
