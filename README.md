@@ -4,17 +4,13 @@ A bad fork of [VapourSynth-Retinex](https://github.com/HomeOfVapourSynthEvolutio
 
 ## Installation
 
-```
-pip install vapoursynth-retinex
-```
-
-Or compile from source, using [Meson](https://mesonbuild.com/):
+Build and install from a source checkout (the hatch build hook compiles the plugin with [Meson](https://mesonbuild.com/) and installs it into `site-packages/vapoursynth/plugins`, where VapourSynth autoloads it):
 
 ```
-meson setup build
-ninja -C build
-ninja -C build install
+pip install .
 ```
+
+A C++14 compiler is required.
 
 ## About Retinex
 
@@ -34,7 +30,7 @@ MSRCP(Multi Scale Retinex with Chromaticity Preservation) is based on MSR. It ap
 
 As MSRCP preserves chromaticity, it is excellent for dynamic range compression and local contrast enhancement, while it doesn't eliminate color cast. To implement the full color constancy feature of Retinex, it is recommended to use MSRCR(Multi Scale Retinex with Color Restoration) instead.
 
-This function accept 8-16bit integer Gray/YUV/RGB/YCoCg input. Sub-sampled format is not supported. If you want to process YUV420/YUV422 clip, convert it to YUV444 or RGB first.
+This function accept 8-16bit integer Gray/YUV/RGB input. Sub-sampled format is not supported. If you want to process YUV420/YUV422 clip, convert it to YUV444 or RGB first.
 
 For processing in YUV444 and RGB, the filtering results are different. The intensity channel on which MSR is applied, is Y for YUV444 input and (R+G+B)/3 for RGB input. Since Y is a weighted average of R, G, B, processing in YUV444 may produce imbalanced chromaticity preservation. Also when chroma_protect is larger than 1 (default 1.2), the saturation of YUV444 processing result will be different from that of RGB processing result.
 
@@ -65,7 +61,7 @@ retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, floa
     Valid range is [0,1), and the sum of lower_thr and upper_thr should be less than 1.<br />
     Increase it if there are some extreme bright parts in the Retinex output which makes the whole image too dark.
 
-- fulls: (Default: True for RGB/YCoCg input, False for YUV/Gray input)<br />
+- fulls: (Default: True for RGB input, False for YUV/Gray input)<br />
     Determine the value range of input clip. True means full range/PC range, and False means limited range/TV range.
 
 - fulld: (Default: fulls)<br />
@@ -75,10 +71,10 @@ retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, floa
 - chroma_protect: (Default: 1.2)<br />
     The base of log function to attenuate chroma adjustment. It could avoid extreme chroma amplifying, while the saturation of the result is changed.<br />
     Available range is [1, +inf), 1 means no attenuation.<br />
-    It is only available for YUV/YCoCg input.
+    It is only available for YUV input.
 
 - device: (Default: ["cpu_box"])<br />
-    Which implementation performs the Gaussian blur for each scale in `sigma`, one of "cpu_box", "cpu_iir", "gpu" or "cuda":<br />
+    Which implementation performs the Gaussian blur for each scale in `sigma`, one of "cpu_box", "cpu_iir", "cpu_ass", "gpu" or "cuda":<br />
     "cpu_ass" uses the [libass cascade blur](https://github.com/libass/libass/blob/master/libass/ass_blur.c), which provides a nice speed up with similar visual results for larger scales.<br />
     "cpu_box" approximates the Gaussian with a 3-pass box blur (sliding-window sums), entirely in this plugin — no extra dependency, and its cost is independent of sigma.<br />
     "cpu_iir" approximates the Gaussian with a single-pass Young/van Vliet 4th-order recursive filter, also entirely in this plugin and independent of sigma. Similar speed to "cpu_box"; either is a reasonable default.<br />
@@ -88,39 +84,13 @@ retinex.MSRCP(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, floa
     If fewer entries than `sigma` are given, the last entry is repeated for the remaining scales, so a single value applies to every scale.
 
 - device_id: (Default: [0])<br />
-    Which GPU/CUDA device to use, per scale (same repeat-last-if-shorter rule as `device`). Ignored for scales using "cpu".
+    Which GPU/CUDA device to use, per scale (same repeat-last-if-shorter rule as `device`). Ignored for scales using a "cpu_*" device.
 
 - num_streams: (Default: [1])<br />
-    Number of concurrent streams for the "gpu"/"cuda" backends, per scale (same repeat-last-if-shorter rule as `device`). Ignored for scales using "cpu".
+    Number of concurrent streams for the "gpu"/"cuda" backends, per scale (same repeat-last-if-shorter rule as `device`). Ignored for scales using a "cpu_*" device.
 
 - tune: (Default: unset)<br />
     OpenCL tuning parameter passed through to vapoursynth-zipcl, per scale (same repeat-last-if-shorter rule as `device`). Only used for scales using "gpu"; left at the plugin's own default when not given.
-
-### Example
-
-TV range YUV420P8 input, filtered in TV range YUV444P16 with chroma protect, output TV range YUV444P16
-
-```python
-v = core.fmtc.resample(v, csp=vs.YUV444P16)
-v = core.retinex.MSRCP(v, chroma_protect=1.2)
-```
-
-JPEG image(PC range YUV420P8 with MPEG-1 chroma placement) input, filtered in PC range YUV444P16 without chroma protect, output PC range RGB48
-
-```python
-i = core.lsmas.LWLibavSource(r'Image.jpg')
-i = core.fmtc.resample(i, csp=vs.YUV444P16, fulls=True, cplace="MPEG1")
-i = core.retinex.MSRCP(i, fulls=True, chroma_protect=1)
-i = core.fmtc.matrix(i, mat="601", fulls=True, csp=vs.RGB48)
-```
-
-PNG image(PC range RGB24) input, filtered in PC range RGB48, output PC range RGB48
-
-```python
-i = core.lsmas.LWLibavSource(r'Image.png')
-i = core.fmtc.bitdepth(i, bits=16)
-i = core.retinex.MSRCP(i)
-```
 
 ## MSRCR
 
@@ -163,33 +133,6 @@ retinex.MSRCR(clip input, float[] sigma=[25,80,250], float lower_thr=0.001, floa
 - device, device_id, num_streams, tune:<br />
     The same as MSRCP.
 
-### Example
-
-TV range YUV420P8 input, filtered in PC range RGB48, output PC range RGB48
-
-```python
-v = core.fmtc.resample(v, csp=vs.YUV444P16)
-v = core.fmtc.matrix(v, mat="709", csp=vs.RGB48)
-v = core.retinex.MSRCR(v)
-```
-
-JPEG image(PC range YUV420P8 with MPEG-1 chroma placement) input, filtered in PC range RGB48 without color restoration (pure MSR), output PC range RGB48
-
-```python
-i = core.lsmas.LWLibavSource(r'Image.jpg')
-i = core.fmtc.resample(i, csp=vs.YUV444P16, fulls=True, cplace="MPEG1")
-i = core.fmtc.matrix(i, mat="601", fulls=True, csp=vs.RGB48)
-i = core.retinex.MSRCR(i, restore=0)
-```
-
-PNG image(PC range RGB24) input, filtered in PC range RGB48, output PC range RGB48
-
-```python
-i = core.lsmas.LWLibavSource(r'Image.png')
-i = core.fmtc.bitdepth(i, bits=16)
-i = core.retinex.MSRCR(i)
-```
-
 ## Guided_RCP
 
 ### Description
@@ -211,23 +154,52 @@ retinex.Guided_RCP(clip input, int radius=20, float eps=0.01, int subsample=4, f
 
 - radius: (Default: 20)<br />
     The guided filter's local window radius, in pixels. Larger values smooth over a wider area (similar role to MSRCP's `sigma`, but a single value since only one application is needed).<br />
-    0 disables filtering (the output is effectively unfiltered, same as a `sigma` scale of 0 in MSRCP).
+    0 disables filtering: the input is returned unchanged.
 
 - eps: (Default: 0.01)<br />
     The guided filter's regularization parameter, in the same [0,1]-normalized units as the intensity channel. Smaller values preserve edges more strongly (less smoothing across them); larger values behave more like an ordinary blur. Must be positive.
 
 - subsample: (Default: 4)<br />
-    Downsampling factor used by the fast guided filter algorithm to compute local statistics at reduced resolution before upsampling back to full size. 1 disables the speedup and computes at full resolution (slower, marginally more accurate). Should generally not exceed `radius`, or quality degrades since the downsampled window becomes too coarse relative to the requested radius.
+    Downsampling factor used by the fast guided filter algorithm to compute local statistics at reduced resolution before upsampling back to full size. 1 disables the speedup and computes at full resolution (slower, marginally more accurate). Should generally not exceed `radius`: the window radius at the reduced resolution is `radius / subsample`, clamped to at least 1, so a larger `subsample` silently widens the effective window.
 
 - lower_thr, upper_thr, fulls, fulld, chroma_protect:<br />
     The same as MSRCP.
 
-### Example
+## GaussBlur (diagnostic)
 
-PNG image(PC range RGB24) input, filtered in PC range RGB48, output PC range RGB48
+A test/diagnostic function exposing the Gaussian blur backends that MSRCP/MSRCR use internally, so they can be checked and benchmarked directly. Not intended for general use.
 
 ```python
-i = core.lsmas.LWLibavSource(r'Image.png')
-i = core.fmtc.bitdepth(i, bits=16)
-i = core.retinex.Guided_RCP(i)
+retinex.GaussBlur(clip clip, float sigma, data device="cpu_box")
 ```
+
+- clip: 32-bit float Gray (GrayS) only.
+- sigma: Gaussian standard deviation in pixels; must be finite and non-negative. 0 returns the input unchanged.
+- device: `"cpu_box"`, `"cpu_iir"`, `"cpu_ass"`, `"gpu"` or `"cuda"`, as for MSRCP/MSRCR.
+
+## Testing and benchmarks
+
+With the plugin installed into the current environment (`pip install .`):
+
+```
+pip install pytest numpy scipy
+pytest
+python bench/bench_blur.py
+```
+
+`bench/bench_blur.py` reports frames per second for `GaussBlur` per device and sigma, MSRCP per device and Guided_RCP (default 1920x1080; see `--help`). Results on 4 CPU threads (1080p, fps):
+
+| | sigma 5 | 25 | 80 | 250 |
+|---|---:|---:|---:|---:|
+| GaussBlur cpu_box | 364 | 345 | 351 | 335 |
+| GaussBlur cpu_iir | 206 | 207 | 206 | 208 |
+| GaussBlur cpu_ass | 431 | 521 | 526 | 521 |
+
+| YUV444P16, defaults | fps |
+|---|---:|
+| MSRCP cpu_box | 47.0 |
+| MSRCP cpu_iir | 35.7 |
+| MSRCP cpu_ass | 54.8 |
+| Guided_RCP | 66.4 |
+
+Accuracy differs per device: `cpu_iir` matches a true Gaussian most closely in shape (its effective width is about 10% above `sigma`), `cpu_ass` is closest in width, and `cpu_box` treats very small sigma (below about 0.8) as no blur.
