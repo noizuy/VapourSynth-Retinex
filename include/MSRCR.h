@@ -23,6 +23,7 @@
 
 #include "Helper.h"
 #include "MSR.h"
+#include "Simd.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -113,10 +114,78 @@ public:
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
+// Arguments of the color restoration loop: each MSR channel is multiplied by log(C * restore / (R + G + B) + 1).
+template < typename T >
+struct MSRCRRestoreArgs
+{
+    const T *Rsrcp, *Gsrcp, *Bsrcp;
+    float *odataR, *odataG, *odataB;
+    int width, height, stride;
+    T sFloor;
+    float restore;
+};
+
+template < typename T >
+RETINEX_FORCEINLINE void MSRCRRestoreImpl(const MSRCRRestoreArgs<T> &a,
+    float &minR, float &maxR, float &minG, float &maxG, float &minB, float &maxB)
+{
+    minR = minG = minB = FLT_MAX;
+    maxR = maxG = maxB = -FLT_MAX;
+
+    // Locals: the row stores could alias the struct's float members, which would force reloads inside the loop
+    const float restore = a.restore;
+    const T sFloor = a.sFloor;
+
+    for (int j = 0; j < a.height; j++)
+    {
+        const int r = a.stride * j;
+        float *orowR = a.odataR + r;
+        float *orowG = a.odataG + r;
+        float *orowB = a.odataB + r;
+
+        for (int x = 0; x < a.width; x++)
+        {
+            const int i = r + x;
+            const float RvalFL = static_cast<float>(a.Rsrcp[i] - sFloor);
+            const float GvalFL = static_cast<float>(a.Gsrcp[i] - sFloor);
+            const float BvalFL = static_cast<float>(a.Bsrcp[i] - sFloor);
+            // restore / (R + G + B), 0 where the sum is 0 (divisor guarded so that the select needs no branch)
+            const float sum = RvalFL + GvalFL + BvalFL;
+            const float temp = sum <= 0 ? 0 : restore / (sum <= 0 ? 1 : sum);
+            orowR[x] *= FastLog(RvalFL * temp + 1);
+            orowG[x] *= FastLog(GvalFL * temp + 1);
+            orowB[x] *= FastLog(BvalFL * temp + 1);
+        }
+
+        RowMinMax(orowR, a.width, minR, maxR);
+        RowMinMax(orowG, a.width, minG, maxG);
+        RowMinMax(orowB, a.width, minB, maxB);
+    }
+}
+
+#if RETINEX_AVX2_DISPATCH
+template < typename T >
+RETINEX_TARGET_AVX2 void MSRCRRestoreAvx2(const MSRCRRestoreArgs<T> &a,
+    float &minR, float &maxR, float &minG, float &maxG, float &minB, float &maxB)
+{
+    MSRCRRestoreImpl(a, minR, maxR, minG, maxG, minB, maxB);
+}
+#endif
+
+template < typename T >
+void MSRCRRestore(const MSRCRRestoreArgs<T> &a,
+    float &minR, float &maxR, float &minG, float &maxG, float &minB, float &maxB)
+{
+    RETINEX_DISPATCH(MSRCRRestoreAvx2(a, minR, maxR, minG, maxG, minB, maxB),
+        MSRCRRestoreImpl(a, minR, maxR, minG, maxG, minB, maxB));
+}
+
+
 template < typename T >
 void MSRCRProcess::process_core()
 {
     int i, j, upper;
+    float minR, maxR, minG, maxG, minB, maxB;
 
     // Calculate quantization parameters according to bit per sample and limited/full range
     // Floor and Ceil for limited range src will be determined later according to minimum and maximum value in the frame
@@ -126,10 +195,10 @@ void MSRCRProcess::process_core()
     T dCeil = d.fulld ? (1 << bps) - 1 : 235 << (bps - 8);
 
     // Allocate floating point data buff
-    FLType *idata = Scratch<FLType>(ScratchFrame, size_t(4) * pcount);
-    FLType *odataR = idata + pcount;
-    FLType *odataG = odataR + pcount;
-    FLType *odataB = odataG + pcount;
+    float *idata = Scratch<float>(ScratchFrame, size_t(4) * pcount);
+    float *odataR = idata + pcount;
+    float *odataG = odataR + pcount;
+    float *odataB = odataG + pcount;
 
     // Get read and write pointer for src and dst
     const T *Rsrcp, *Gsrcp, *Bsrcp;
@@ -169,40 +238,30 @@ void MSRCRProcess::process_core()
 
     // Apply MSR to floating point R channel
     CopyIntensity(idata, 0);
-    MSRKernel(odataR, idata, 0);
+    MSRKernel(odataR, idata, 0, minR, maxR);
 
     // Apply MSR to floating point G channel
     CopyIntensity(idata, 1);
-    MSRKernel(odataG, idata, 1);
+    MSRKernel(odataG, idata, 1, minG, maxG);
 
     // Apply MSR to floating point B channel
     CopyIntensity(idata, 2);
-    MSRKernel(odataB, idata, 2);
+    MSRKernel(odataB, idata, 2, minB, maxB);
 
-    // Color restoration
-    FLType RvalFL, GvalFL, BvalFL;
-    FLType temp;
-
-    for (j = 0; j < height; j++)
-    {
-        i = stride * j;
-        for (upper = i + width; i < upper; i++)
-        {
-            RvalFL = Rsrcp[i] - sFloor;
-            GvalFL = Gsrcp[i] - sFloor;
-            BvalFL = Bsrcp[i] - sFloor;
-            temp = RvalFL + GvalFL + BvalFL;
-            temp = temp <= 0 ? 0 : d.restore / temp;
-            odataR[i] *= log(RvalFL * temp + 1);
-            odataG[i] *= log(GvalFL * temp + 1);
-            odataB[i] *= log(BvalFL * temp + 1);
-        }
-    }
+    // Color restoration, tracking the range of each restored channel for the color balance
+    // (the kernel's ranges no longer apply after the per-pixel restoration factor)
+    MSRCRRestoreArgs<T> a;
+    a.Rsrcp = Rsrcp; a.Gsrcp = Gsrcp; a.Bsrcp = Bsrcp;
+    a.odataR = odataR; a.odataG = odataG; a.odataB = odataB;
+    a.width = width; a.height = height; a.stride = stride;
+    a.sFloor = sFloor;
+    a.restore = static_cast<float>(d.restore);
+    MSRCRRestore(a, minR, maxR, minG, maxG, minB, maxB);
 
     // Simplest color balance with pixel clipping on either side of the dynamic range
-    SimplestColorBalance(Rdstp, odataR, Rsrcp, dFloor, dCeil);
-    SimplestColorBalance(Gdstp, odataG, Gsrcp, dFloor, dCeil);
-    SimplestColorBalance(Bdstp, odataB, Bsrcp, dFloor, dCeil);
+    SimplestColorBalance(Rdstp, odataR, Rsrcp, dFloor, dCeil, minR, maxR);
+    SimplestColorBalance(Gdstp, odataG, Gsrcp, dFloor, dCeil, minG, maxG);
+    SimplestColorBalance(Bdstp, odataB, Bsrcp, dFloor, dCeil, minB, maxB);
 }
 
 

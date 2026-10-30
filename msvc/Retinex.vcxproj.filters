@@ -54,6 +54,9 @@
     <ClInclude Include="..\include\MSRCR.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\include\Simd.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="..\include\PlaneFilter.h">
       <Filter>Header Files</Filter>
     </ClInclude>

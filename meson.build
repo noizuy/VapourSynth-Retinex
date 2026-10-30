@@ -29,6 +29,11 @@ if host_machine.cpu_family().startswith('x86')
   add_project_arguments('-mfpmath=sse', '-msse2', language : 'cpp')
 endif
 
+# Lets GCC turn the per-pixel selects of the hot loops (see include/Simd.h) into vector blends.
+# Clang already defaults to it; FP exceptions are never inspected.
+cpp = meson.get_compiler('cpp')
+add_project_arguments(cpp.get_supported_arguments('-fno-trapping-math'), language : 'cpp')
+
 # Keep the module mapped after dlclose(): with a statically linked C++ runtime (e.g. zig c++),
 # runtime exit-time/thread-local destructors can run after VapourSynth unloads the
 # plugin and crash the process on exit.
@@ -45,3 +50,10 @@ shared_module('retinex', sources,
   name_prefix : '',
   gnu_symbol_visibility : 'hidden'
 )
+
+# Exhaustive accuracy check of FastLog (include/Simd.h); built only for `meson test`
+fastlog_test = executable('fastlog_test', 'tests/fastlog_test.cpp',
+  include_directories : include_directories('include'),
+  build_by_default : false
+)
+test('fastlog', fastlog_test, timeout : 300)

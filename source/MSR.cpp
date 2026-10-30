@@ -19,50 +19,38 @@
 
 #include "Helper.h"
 #include "MSR.h"
+#include "Simd.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-void MSRProcess::CopyIntensity(FLType *idata, int channel) const
+void MSRProcess::CopyIntensity(float *idata, int channel) const
 {
     const VSFrame *frame = intensityFrame[channel];
     const int srcStride = static_cast<int>(vsapi->getStride(frame, 0) / sizeof(float));
     const float *srcp = reinterpret_cast<const float *>(vsapi->getReadPtr(frame, 0));
 
     for (int j = 0; j < height; j++)
-    {
-        const float *srow = srcp + j * srcStride;
-        FLType *drow = idata + j * stride;
-        for (int x = 0; x < width; x++)
-            drow[x] = static_cast<FLType>(srow[x]);
-    }
+        memcpy(idata + j * stride, srcp + j * srcStride, sizeof(float) * width);
 }
 
 
-int MSRProcess::MSRKernel(FLType *odata, const FLType *idata, int channel) const
+namespace
 {
-    const size_t scount = d.scaleCount();
 
-    // Active scales' blurred frames, in blurFrame[channel]'s order; inactive scales multiply by 2
-    std::vector<const float *> illump;
-    std::vector<int> illumStride;
-    std::vector<bool> active(scount);
-    size_t blurIdx = 0;
-    for (size_t s = 0; s < scount; s++)
-    {
-        active[s] = d.scaleActive(s);
-        if (!active[s]) continue;
-        const VSFrame *bf = blurFrame[channel][blurIdx++];
-        illump.push_back(reinterpret_cast<const float *>(vsapi->getReadPtr(bf, 0)));
-        illumStride.push_back(static_cast<int>(vsapi->getStride(bf, 0) / sizeof(float)));
-    }
+// Per-row product over scales of (I / L + 1), then log averaged over scales, and the range of the result.
+// Inactive scales (sigma 0) multiply by 2, so they still count in the average.
+RETINEX_FORCEINLINE void MSRKernelImpl(float *odata, const float *idata, int width, int height, int stride,
+    const float *const *illump, const int *illumStride, const char *active, size_t scount, float &min, float &max)
+{
+    float omin = FLT_MAX;
+    float omax = -FLT_MAX;
 
-    // Row-fused: product over scales, then log, in one pass per row (same operation order per pixel)
     for (int j = 0; j < height; j++)
     {
-        FLType *orow = odata + j * stride;
-        const FLType *irow = idata + j * stride;
+        float *orow = odata + j * stride;
+        const float *irow = idata + j * stride;
 
         for (int x = 0; x < width; x++)
             orow[x] = 1;
@@ -75,99 +63,145 @@ int MSRProcess::MSRKernel(FLType *odata, const FLType *idata, int channel) const
                 g++;
                 for (int x = 0; x < width; x++)
                 {
-                    const FLType lv = static_cast<FLType>(lrow[x]);
+                    const float lv = lrow[x];
                     orow[x] *= lv <= 0 ? 1 : irow[x] / lv + 1;
                 }
             }
             else
             {
                 for (int x = 0; x < width; x++)
-                    orow[x] *= FLType(2);
+                    orow[x] *= float(2);
             }
         }
 
+        // The product is >= 1; capping it at FLT_MAX (a tiny illumination can overflow it) keeps FastLog in range
         for (int x = 0; x < width; x++)
-            orow[x] = log(orow[x]) / static_cast<FLType>(scount);
+            orow[x] = FastLog(Min(orow[x], FLT_MAX)) / static_cast<float>(scount);
+
+        RowMinMax(orow, width, omin, omax);
     }
 
+    min = omin;
+    max = omax;
+}
+
+#if RETINEX_AVX2_DISPATCH
+RETINEX_TARGET_AVX2 void MSRKernelAvx2(float *odata, const float *idata, int width, int height, int stride,
+    const float *const *illump, const int *illumStride, const char *active, size_t scount, float &min, float &max)
+{
+    MSRKernelImpl(odata, idata, width, height, stride, illump, illumStride, active, scount, min, max);
+}
+#endif
+
+} // namespace
+
+
+int MSRProcess::MSRKernel(float *odata, const float *idata, int channel, float &min, float &max) const
+{
+    const size_t scount = d.scaleCount();
+
+    // Active scales' blurred frames, in blurFrame[channel]'s order
+    std::vector<const float *> illump;
+    std::vector<int> illumStride;
+    std::vector<char> active(scount);
+    size_t blurIdx = 0;
+    for (size_t s = 0; s < scount; s++)
+    {
+        active[s] = d.scaleActive(s);
+        if (!active[s]) continue;
+        const VSFrame *bf = blurFrame[channel][blurIdx++];
+        illump.push_back(reinterpret_cast<const float *>(vsapi->getReadPtr(bf, 0)));
+        illumStride.push_back(static_cast<int>(vsapi->getStride(bf, 0) / sizeof(float)));
+    }
+
+    RETINEX_DISPATCH(
+        MSRKernelAvx2(odata, idata, width, height, stride, illump.data(), illumStride.data(), active.data(), scount, min, max),
+        MSRKernelImpl(odata, idata, width, height, stride, illump.data(), illumStride.data(), active.data(), scount, min, max));
     return 0;
 }
 
 
-int MSRProcess::SimplestColorBalance(FLType *odata, const FLType *idata) const
+void MSRProcess::HistogramClipRange(const float *odata, float &min, float &max) const
+{
+    int h, HistBins = d.HistBins;
+    int Count, MaxCount;
+
+    // 4 interleaved sub-histograms, summed afterwards: consecutive pixels usually fall into the
+    // same bin, and a single histogram serializes those increments through one memory location
+    int *Histogram = vsh::vsh_aligned_malloc<int>(sizeof(int)*HistBins * 4, Alignment);
+    memset(Histogram, 0, sizeof(int)*HistBins * 4);
+    int *Histogram1 = Histogram + HistBins;
+    int *Histogram2 = Histogram1 + HistBins;
+    int *Histogram3 = Histogram2 + HistBins;
+
+    float gain = (HistBins - 1) / (max - min);
+    float offset = -min * gain;
+
+    for (int j = 0; j < height; j++)
+    {
+        const float *row = odata + stride * j;
+        int x = 0;
+        for (; x + 4 <= width; x += 4)
+        {
+            Histogram[static_cast<int>(row[x] * gain + offset)]++;
+            Histogram1[static_cast<int>(row[x + 1] * gain + offset)]++;
+            Histogram2[static_cast<int>(row[x + 2] * gain + offset)]++;
+            Histogram3[static_cast<int>(row[x + 3] * gain + offset)]++;
+        }
+        for (; x < width; x++)
+            Histogram[static_cast<int>(row[x] * gain + offset)]++;
+    }
+
+    for (h = 0; h < HistBins; h++)
+        Histogram[h] += Histogram1[h] + Histogram2[h] + Histogram3[h];
+
+    gain = (max - min) / (HistBins - 1);
+    offset = min;
+
+    Count = 0;
+    MaxCount = static_cast<int>(width*height*d.lower_thr + 0.5);
+
+    for (h = 0; h < HistBins; h++)
+    {
+        Count += Histogram[h];
+        if (Count > MaxCount) break;
+    }
+
+    const float lower = h * gain + offset;
+
+    Count = 0;
+    MaxCount = static_cast<int>(width*height*d.upper_thr + 0.5);
+
+    for (h = HistBins - 1; h >= 0; h--)
+    {
+        Count += Histogram[h];
+        if (Count > MaxCount) break;
+    }
+
+    max = h * gain + offset;
+    min = lower;
+
+    vsh::vsh_aligned_free(Histogram);
+}
+
+
+int MSRProcess::SimplestColorBalance(float *odata, const float *idata, float min, float max) const
 {
     int i, j, upper;
 
-    FLType offset, gain;
-    FLType min = FLType_MAX;
-    FLType max = -FLType_MAX;
+    float offset, gain;
 
-    FLType FloorFL = 0;
-    FLType CeilFL = 1;
-
-    for (j = 0; j < height; j++)
-    {
-        i = stride * j;
-        for (upper = i + width; i < upper; i++)
-        {
-            min = Min(min, odata[i]);
-            max = Max(max, odata[i]);
-        }
-    }
+    float FloorFL = 0;
+    float CeilFL = 1;
 
     if (max <= min)
     {
-        memcpy(odata, idata, sizeof(FLType)*pcount);
+        memcpy(odata, idata, sizeof(float)*pcount);
         return 1;
     }
 
     if (d.lower_thr > 0 || d.upper_thr > 0)
-    {
-        int h, HistBins = d.HistBins;
-        int Count, MaxCount;
-
-        int *Histogram = vsh::vsh_aligned_malloc<int>(sizeof(int)*HistBins, Alignment);
-        memset(Histogram, 0, sizeof(int)*HistBins);
-
-        gain = (HistBins - 1) / (max - min);
-        offset = -min * gain;
-
-        for (j = 0; j < height; j++)
-        {
-            i = stride * j;
-            for (upper = i + width; i < upper; i++)
-            {
-                Histogram[static_cast<int>(odata[i] * gain + offset)]++;
-            }
-        }
-
-        gain = (max - min) / (HistBins - 1);
-        offset = min;
-
-        Count = 0;
-        MaxCount = static_cast<int>(width*height*d.lower_thr + 0.5);
-
-        for (h = 0; h < HistBins; h++)
-        {
-            Count += Histogram[h];
-            if (Count > MaxCount) break;
-        }
-
-        min = h * gain + offset;
-
-        Count = 0;
-        MaxCount = static_cast<int>(width*height*d.upper_thr + 0.5);
-
-        for (h = HistBins - 1; h >= 0; h--)
-        {
-            Count += Histogram[h];
-            if (Count > MaxCount) break;
-        }
-
-        max = h * gain + offset;
-
-        vsh::vsh_aligned_free(Histogram);
-    }
+        HistogramClipRange(odata, min, max);
 
     gain = (CeilFL - FloorFL) / (max - min);
     offset = -min * gain + FloorFL;

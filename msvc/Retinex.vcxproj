@@ -153,6 +153,7 @@
     <ClInclude Include="..\include\MSRCP.h" />
     <ClInclude Include="..\include\MSRCR.h" />
     <ClInclude Include="..\include\PlaneFilter.h" />
+    <ClInclude Include="..\include\Simd.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\source\AssBlur.cpp" />

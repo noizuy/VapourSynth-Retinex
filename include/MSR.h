@@ -386,15 +386,19 @@ public:
     }
 
     // Copies the [0,1] intensity channel into idata (stride == this->stride).
-    void CopyIntensity(FLType *idata, int channel) const;
+    void CopyIntensity(float *idata, int channel) const;
 
-    // Multi Scale Retinex process kernel for floating point data
-    int MSRKernel(FLType *odata, const FLType *idata, int channel) const;
+    // Multi Scale Retinex process kernel for floating point data; min/max receive the range of odata
+    int MSRKernel(float *odata, const float *idata, int channel, float &min, float &max) const;
+
+    // Narrows [min, max] (the range of odata) to the lower_thr/upper_thr histogram percentiles
+    void HistogramClipRange(const float *odata, float &min, float &max) const;
 
     // Simplest color balance with pixel clipping on either side of the dynamic range
-    int SimplestColorBalance(FLType *odata, const FLType *idata) const; // odata as input and output, idata as source
+    // min/max must be the range of odata, as returned by MSRKernel (or tracked by the caller)
+    int SimplestColorBalance(float *odata, const float *idata, float min, float max) const; // odata as input and output, idata as source
     template < typename T >
-    int SimplestColorBalance(T *dst, FLType *odata, const T *src, T dFloor, T dCeil) const; // odata as input, dst as output, src as source
+    int SimplestColorBalance(T *dst, float *odata, const T *src, T dFloor, T dCeil, float min, float max) const; // odata as input, dst as output, src as source
 };
 
 
@@ -402,27 +406,15 @@ public:
 
 
 template < typename T >
-int MSRProcess::SimplestColorBalance(T *dst, FLType *odata, const T *src, T dFloor, T dCeil) const
+int MSRProcess::SimplestColorBalance(T *dst, float *odata, const T *src, T dFloor, T dCeil, float min, float max) const
 {
     int i, j, upper;
 
-    FLType offset, gain;
-    FLType min = FLType_MAX;
-    FLType max = -FLType_MAX;
+    float offset, gain;
 
-    FLType dFloorFL = static_cast<FLType>(dFloor);
-    FLType dCeilFL = static_cast<FLType>(dCeil);
-    FLType dRangeFL = dCeilFL - dFloorFL;
-
-    for (j = 0; j < height; j++)
-    {
-        i = stride * j;
-        for (upper = i + width; i < upper; i++)
-        {
-            min = Min(min, odata[i]);
-            max = Max(max, odata[i]);
-        }
-    }
+    float dFloorFL = static_cast<float>(dFloor);
+    float dCeilFL = static_cast<float>(dCeil);
+    float dRangeFL = dCeilFL - dFloorFL;
 
     if (max <= min)
     {
@@ -431,55 +423,10 @@ int MSRProcess::SimplestColorBalance(T *dst, FLType *odata, const T *src, T dFlo
     }
 
     if (d.lower_thr > 0 || d.upper_thr > 0)
-    {
-        int h, HistBins = d.HistBins;
-        int Count, MaxCount;
-
-        int *Histogram = vsh::vsh_aligned_malloc<int>(sizeof(int)*HistBins, Alignment);
-        memset(Histogram, 0, sizeof(int)*HistBins);
-
-        gain = (HistBins - 1) / (max - min);
-        offset = -min * gain;
-
-        for (j = 0; j < height; j++)
-        {
-            i = stride * j;
-            for (upper = i + width; i < upper; i++)
-            {
-                Histogram[static_cast<int>(odata[i] * gain + offset)]++;
-            }
-        }
-
-        gain = (max - min) / (HistBins - 1);
-        offset = min;
-
-        Count = 0;
-        MaxCount = static_cast<int>(width*height*d.lower_thr + 0.5);
-
-        for (h = 0; h < HistBins; h++)
-        {
-            Count += Histogram[h];
-            if (Count > MaxCount) break;
-        }
-
-        min = h * gain + offset;
-
-        Count = 0;
-        MaxCount = static_cast<int>(width*height*d.upper_thr + 0.5);
-
-        for (h = HistBins - 1; h >= 0; h--)
-        {
-            Count += Histogram[h];
-            if (Count > MaxCount) break;
-        }
-
-        max = h * gain + offset;
-
-        vsh::vsh_aligned_free(Histogram);
-    }
+        HistogramClipRange(odata, min, max);
 
     gain = dRangeFL / (max - min);
-    offset = -min * gain + dFloorFL + FLType(0.5);
+    offset = -min * gain + dFloorFL + float(0.5);
 
     if (d.lower_thr > 0 || d.upper_thr > 0)
     {

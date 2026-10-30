@@ -187,6 +187,8 @@ pytest
 python bench/bench_blur.py
 ```
 
+`meson test -C build` runs an exhaustive accuracy check of the vectorized float logarithm used by MSRCP/MSRCR (every positive normal float, about 20 seconds).
+
 `bench/bench_blur.py` reports frames per second for `GaussBlur` per device and sigma, MSRCP per device and Guided_RCP (default 1920x1080; see `--help`). Results on 4 CPU threads (1080p, fps):
 
 | | sigma 5 | 25 | 80 | 250 |
