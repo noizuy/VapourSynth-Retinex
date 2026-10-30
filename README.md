@@ -189,19 +189,19 @@ python bench/bench_blur.py
 
 `meson test -C build` runs an exhaustive accuracy check of the vectorized float logarithm used by MSRCP/MSRCR (every positive normal float, about 20 seconds).
 
-`bench/bench_blur.py` reports frames per second for `GaussBlur` per device and sigma, MSRCP per device and Guided_RCP (default 1920x1080; see `--help`). Results on 4 CPU threads (1080p, fps):
+`bench/bench_blur.py` reports frames per second for `GaussBlur` per device and sigma, MSRCP per device and Guided_RCP (default 1920x1080; see `--help`). Results on 4 CPU threads (`python bench/bench_blur.py --threads 4 --frames 80 --repeats 5`; 1080p, fps):
 
 | | sigma 5 | 25 | 80 | 250 |
 |---|---:|---:|---:|---:|
-| GaussBlur cpu_box | 364 | 345 | 351 | 335 |
-| GaussBlur cpu_iir | 206 | 207 | 206 | 208 |
-| GaussBlur cpu_ass | 431 | 521 | 526 | 521 |
+| GaussBlur cpu_box | 754 | 737 | 703 | 658 |
+| GaussBlur cpu_iir | 484 | 468 | 490 | 495 |
+| GaussBlur cpu_ass | 1220 | 1617 | 1565 | 1524 |
 
 | YUV444P16, defaults | fps |
 |---|---:|
-| MSRCP cpu_box | 47.0 |
-| MSRCP cpu_iir | 35.7 |
-| MSRCP cpu_ass | 54.8 |
-| Guided_RCP | 66.4 |
+| MSRCP cpu_box | 141 |
+| MSRCP cpu_iir | 113 |
+| MSRCP cpu_ass | 206 |
+| Guided_RCP | 273 |
 
 Accuracy differs per device: `cpu_iir` matches a true Gaussian most closely in shape (its effective width is about 10% above `sigma`), `cpu_ass` is closest in width, and `cpu_box` treats very small sigma (below about 0.8) as no blur.

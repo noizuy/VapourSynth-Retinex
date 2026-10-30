@@ -46,12 +46,13 @@ def cpu_limit():
     return n
 
 
-def fps(clip, frames, repeats):
-    clip = clip[:frames]
-    for _ in clip[: min(frames, core.num_threads)].frames():  # warm-up (node init, thread spin-up)
+def fps(make, frames, repeats):
+    """Each run drains a freshly created filter instance, so no frame is served from the previous run's cache."""
+    for _ in make()[: min(frames, core.num_threads)].frames():  # warm-up (thread spin-up, source frames)
         pass
     runs = []
     for _ in range(repeats):
+        clip = make()[:frames]
         t = time.perf_counter()
         for _ in clip.frames():
             pass
@@ -69,22 +70,23 @@ def main():
     ap.add_argument("--filter", default="", help="only run cases whose name contains this substring")
     a = ap.parse_args()
     core.num_threads = a.threads if a.threads > 0 else cpu_limit()
+    core.max_cache_size = 1024  # MB; output frames are never re-requested, so a big cache only grows memory
 
     w, h, n = a.width, a.height, a.frames
     gs = source(vs.GRAYS, w, h, n)
     yuv = source(vs.YUV444P16, w, h, n)
     r = core.retinex
-    cases = [("source GrayS", gs), ("source YUV444P16", yuv)]
+    cases = [("source GrayS", lambda: gs), ("source YUV444P16", lambda: yuv)]
     for d in DEVICES:
-        cases += [(f"GaussBlur {d} sigma={s}", r.GaussBlur(gs, sigma=s, device=d)) for s in SIGMAS]
-    cases += [(f"MSRCP {d}", r.MSRCP(yuv, device=d)) for d in DEVICES]
-    cases += [("Guided_RCP", r.Guided_RCP(yuv))]
+        cases += [(f"GaussBlur {d} sigma={s}", lambda s=s, d=d: r.GaussBlur(gs, sigma=s, device=d)) for s in SIGMAS]
+    cases += [(f"MSRCP {d}", lambda d=d: r.MSRCP(yuv, device=d)) for d in DEVICES]
+    cases += [("Guided_RCP", lambda: r.Guided_RCP(yuv))]
 
     print(f"{w}x{h}, {n} frames, median of {a.repeats}, threads={core.num_threads}\n")
     print("| case | fps |\n|---|---:|")
-    for name, clip in cases:
+    for name, make in cases:
         if a.filter in name:
-            print(f"| {name} | {fps(clip, n, a.repeats):.1f} |", flush=True)
+            print(f"| {name} | {fps(make, n, a.repeats):.1f} |", flush=True)
 
 
 if __name__ == "__main__":
